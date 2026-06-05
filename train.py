@@ -21,13 +21,22 @@ def _setup_callbacks(model, save_phase_ckpt=False):
 
     ultralytics 在训练正常结束后会自动剥离 last.pt 的 optimizer/epoch 状态，
     导致 Phase 2 无法 resume。save_phase_ckpt=True 时额外保存 phase_last.pt。
+
+    注意：phase_last.pt 的复制必须挂在 on_model_save 上，不能挂在 on_fit_epoch_end。
+    final_eval() 会在 strip_optimizer 之后再次触发 on_fit_epoch_end，导致
+    phase_last.pt 被覆盖为已剥离的版本。
     """
     def on_fit_epoch_end(trainer):
         if trainer.csv.exists():
             plot_results(file=trainer.csv)
+
+    def on_model_save(trainer):
         if save_phase_ckpt:
             shutil.copy(trainer.last, trainer.save_dir / 'weights' / 'phase_last.pt')
+
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+    if save_phase_ckpt:
+        model.add_callback("on_model_save", on_model_save)
 
 
 '''
@@ -374,24 +383,27 @@ if __name__ == "__main__":
     remaining = UnFreeze_Epoch - max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
     if remaining > 0:
         start_epoch = max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
-        print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs "
-              f"(epoch {start_epoch}→{UnFreeze_Epoch}, batch={Unfreeze_batch_size})"
-              f"{' [resume]' if (freeze_save_dir is not None or is_resuming) else ''}")
 
         if freeze_save_dir is not None:
-            # Phase 1 刚跑完，用回调保存的 phase_last.pt（ultralytics 会剥离 last.pt 的 optimizer）
+            # Phase 1 刚跑完，加载 phase_last.pt 的模型权重但不 resume。
+            # Phase 2 有不同的 epochs/freeze/batch，是新的训练会话。
             last_pt = os.path.join(freeze_save_dir, 'weights', 'phase_last.pt')
-            resume_phase2 = True
+            resume_phase2 = False
+            tag = ' [from phase_last.pt]'
         else:
             last_pt = model_path
             resume_phase2 = is_resuming
+            tag = ' [resume]' if is_resuming else ''
 
-        close_mosaic_unfreeze = int(UnFreeze_Epoch * (1.0 - special_aug_ratio)) if mosaic else 0
+        print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs "
+              f"(epoch {start_epoch}→{UnFreeze_Epoch}, batch={Unfreeze_batch_size}){tag}")
+
+        close_mosaic_unfreeze = int(remaining * (1.0 - special_aug_ratio)) if mosaic else 0
         model = YOLO(last_pt)
         _setup_callbacks(model, save_phase_ckpt=False)
         model.train(
             **train_args,
-            epochs=UnFreeze_Epoch,
+            epochs=remaining,
             batch=Unfreeze_batch_size,
             warmup_epochs=0 if resume_phase2 else 3.0,
             close_mosaic=close_mosaic_unfreeze,
