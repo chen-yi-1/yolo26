@@ -5,6 +5,15 @@ import datetime
 import os
 
 from ultralytics import YOLO
+from ultralytics.utils.plotting import plot_results
+
+
+def _add_per_epoch_plotting(model):
+    """在每个epoch结束后更新results.png，即使训练中断也能看到曲线。"""
+    def on_fit_epoch_end(trainer):
+        if trainer.csv.exists():
+            plot_results(file=trainer.csv)
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
 
 '''
 训练自己的目标检测模型一定需要注意以下几点：
@@ -17,9 +26,9 @@ from ultralytics import YOLO
 
 2、损失值的大小用于判断是否收敛，比较重要的是有收敛的趋势，即验证集损失不断下降，如果验证集损失基本上不改变的话，模型基本上就收敛了。
    损失值的具体大小并没有什么意义，大和小只在于损失的计算方式，并不是接近于0才好。如果想要让损失好看点，可以直接到对应的损失函数里面除上10000。
-   训练过程中的损失值会保存在logs文件夹下
+   训练过程中的损失值会保存在 runs/detect/logs/ 下
 
-3、训练好的权值文件保存在logs文件夹中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
+3、训练好的权值文件保存在 runs/detect/logs/ 中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
    如果只是训练了几个Step是不会保存的，Epoch和Step的概念要捋清楚一下。
 '''
 if __name__ == "__main__":
@@ -43,7 +52,7 @@ if __name__ == "__main__":
     #   模型的 预训练权重 比较重要的部分是 主干特征提取网络的权值部分，用于进行特征提取。
     #   预训练权重对于99%的情况都必须要用，不用的话主干部分的权值太过随机，特征提取效果不明显，网络训练的结果也不会好
     #
-    #   如果训练过程中存在中断训练的操作，可以在断点续训时将model_path设置成logs文件夹下的last.pt权值文件。
+    #   如果训练过程中存在中断训练的操作，可以在断点续训时将model_path设置成runs/detect/logs/下的last.pt权值文件。
     #
     #   YOLO26 预训练权重路径（支持自动下载：yolo26n.pt / yolo26s.pt / yolo26m.pt / yolo26l.pt / yolo26x.pt）
     #   如果想要让模型从0开始训练，则设置model_path = 'yolo26x.yaml'，下面的Freeze_Train = False，此时从零开始训练，且没有冻结主干的过程。
@@ -164,7 +173,7 @@ if __name__ == "__main__":
     #------------------------------------------------------------------#
     save_period         = 10
     #------------------------------------------------------------------#
-    #   save_dir        权值与日志文件保存的文件夹
+    #   save_dir        训练输出的 project 名称（ultralytics 实际路径为 runs/detect/{save_dir}/{train_name}/）
     #------------------------------------------------------------------#
     save_dir            = 'logs'
     #------------------------------------------------------------------#
@@ -288,9 +297,11 @@ if __name__ == "__main__":
     #   Phase 1: Freeze Backbone
     # ================================ #
     freeze_phase_epochs = Freeze_Epoch - Init_Epoch
+    freeze_save_dir = None  # 记录 Phase 1 的实际保存路径，供 Phase 2 使用
     if Freeze_Train and freeze_phase_epochs > 0:
         print(f"\n[Phase 1] Freezing backbone for {freeze_phase_epochs} epochs (batch={Freeze_batch_size})")
         model = YOLO(model_path)
+        _add_per_epoch_plotting(model)
         model.train(
             **train_args,
             epochs=Freeze_Epoch,
@@ -299,6 +310,7 @@ if __name__ == "__main__":
             close_mosaic=0,             # 冻结阶段不关闭mosaic
             freeze=10,                  # 冻结前10层（backbone）
         )
+        freeze_save_dir = str(model.trainer.save_dir)
 
     # ================================ #
     #   Phase 2: Unfreeze All
@@ -307,13 +319,14 @@ if __name__ == "__main__":
     if remaining > 0:
         print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs (batch={Unfreeze_batch_size})")
         # Phase 1 运行过则从 last.pt 继续；否则从预训练权重开始
-        if Freeze_Train and (Freeze_Epoch - Init_Epoch) > 0:
-            last_pt = os.path.join(save_dir, train_name, 'weights', 'last.pt')
+        if freeze_save_dir is not None:
+            last_pt = os.path.join(freeze_save_dir, 'weights', 'last.pt')
         else:
             last_pt = model_path
 
         close_mosaic_unfreeze = int(UnFreeze_Epoch * (1.0 - special_aug_ratio)) if mosaic else 0
         model = YOLO(last_pt)
+        _add_per_epoch_plotting(model)
         model.train(
             **train_args,
             epochs=UnFreeze_Epoch,
@@ -323,5 +336,13 @@ if __name__ == "__main__":
             freeze=None,                # 解冻所有层
             resume=True,
         )
+        final_save_dir = str(model.trainer.save_dir)
+    elif freeze_save_dir is not None:
+        final_save_dir = freeze_save_dir
+    else:
+        final_save_dir = None
 
-    print(f"\nTraining complete. Best weights saved in logs/")
+    if final_save_dir:
+        print(f"\nTraining complete. Results saved in {final_save_dir}")
+    else:
+        print(f"\nTraining complete.")
