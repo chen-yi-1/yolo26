@@ -16,6 +16,19 @@ def _add_per_epoch_plotting(model):
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
 
 
+def _add_phase_checkpoint(model, ckpt_name='phase_last.pt'):
+    """在训练过程中保存一份带 optimizer 状态的 checkpoint 副本。
+
+    ultralytics 在训练正常结束后会自动剥离 last.pt 中的 optimizer/epoch 状态，
+    导致 Phase 2 无法 resume。此回调在最后一个 epoch 结束时额外保存一份未剥离的副本。
+    """
+    import shutil
+
+    def on_fit_epoch_end(trainer):
+        shutil.copy(trainer.last, trainer.save_dir / 'weights' / ckpt_name)
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+
+
 def _train_with_resume(model, **train_kwargs):
     """调用 model.train()，并绕过 PyTorch 2.6+ 的 weights_only=True 默认值。
 
@@ -367,6 +380,7 @@ if __name__ == "__main__":
               f"{' [resume]' if is_resuming else ''}")
         model = YOLO(model_path)
         _add_per_epoch_plotting(model)
+        _add_phase_checkpoint(model)    # 保存未剥离的 checkpoint 供 Phase 2 resume
         _train_with_resume(model,
             **train_args,
             epochs=Freeze_Epoch,
@@ -389,7 +403,7 @@ if __name__ == "__main__":
               f"{' [resume]' if (freeze_save_dir is not None or is_resuming) else ''}")
         # Phase 1 运行过则从 last.pt 继续；否则从用户指定的 model_path
         if freeze_save_dir is not None:
-            last_pt = os.path.join(freeze_save_dir, 'weights', 'last.pt')
+            last_pt = os.path.join(freeze_save_dir, 'weights', 'phase_last.pt')
             resume_phase2 = True   # Phase 1 刚跑完，last.pt 一定是训练断点
         else:
             last_pt = model_path
