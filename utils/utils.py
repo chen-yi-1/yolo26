@@ -84,20 +84,4 @@ def show_config(**kwargs):
         print('|%25s | %40s|' % (str(key), str(value)))
     print('-' * 70)
         
-def download_weights(phi, model_dir="./model_data"):
-    import os
-
-    from torch.hub import load_state_dict_from_url
-    
-    download_urls = {
-        "n" : 'https://github.com/bubbliiiing/yolov8-pytorch/releases/download/v1.0/yolov8_n_backbone_weights.pth',
-        "s" : 'https://github.com/bubbliiiing/yolov8-pytorch/releases/download/v1.0/yolov8_s_backbone_weights.pth',
-        "m" : 'https://github.com/bubbliiiing/yolov8-pytorch/releases/download/v1.0/yolov8_m_backbone_weights.pth',
-        "l" : 'https://github.com/bubbliiiing/yolov8-pytorch/releases/download/v1.0/yolov8_l_backbone_weights.pth',
-        "x" : 'https://github.com/bubbliiiing/yolov8-pytorch/releases/download/v1.0/yolov8_x_backbone_weights.pth',
-    }
-    url = download_urls[phi]
-    
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-    load_state_dict_from_url(url, model_dir)
+# download_weights removed — YOLO26 loads full pretrained model via YoloBody.load_pretrained()

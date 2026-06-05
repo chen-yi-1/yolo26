@@ -18,7 +18,7 @@ from nets.yolo_training import (Loss, ModelEMA, get_lr_scheduler,
                                 set_optimizer_lr, weights_init)
 from utils.callbacks import EvalCallback, LossHistory
 from utils.dataloader import YoloDataset, yolo_dataset_collate
-from utils.utils import (download_weights, get_classes, seed_everything,
+from utils.utils import (get_classes, seed_everything,
                          show_config, worker_init_fn)
 from utils.utils_fit import fit_one_epoch
 
@@ -94,27 +94,18 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolov8_s.pth'
+    # YOLO26x 预训练权重路径
+    # 设置为空字符串 '' 则不加载预训练权重，从零开始训练
+    model_path      = 'yolo26x.pt'
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
     input_shape     = [640, 640]
     #------------------------------------------------------#
-    #   phi             所使用到的yolov8的版本
-    #                   n : 对应yolov8_n
-    #                   s : 对应yolov8_s
-    #                   m : 对应yolov8_m
-    #                   l : 对应yolov8_l
-    #                   x : 对应yolov8_x
+    #   phi             YOLO26 版本: n/s/m/l/x
+    #                   x : YOLO26x (58.8M 参数, 208.5 GFLOPs, NMS-Free + DFL-Free)
     #------------------------------------------------------#
-    phi             = 's'
-    #----------------------------------------------------------------------------------------------------------------------------#
-    #   pretrained      是否使用主干网络的预训练权重，此处使用的是主干的权重，因此是在模型构建的时候进行加载的。
-    #                   如果设置了model_path，则主干的权值无需加载，pretrained的值无意义。
-    #                   如果不设置model_path，pretrained = True，此时仅加载主干开始训练。
-    #                   如果不设置model_path，pretrained = False，Freeze_Train = Fasle，此时从0开始训练，且没有冻结主干的过程。
-    #----------------------------------------------------------------------------------------------------------------------------#
-    pretrained      = False
+    phi             = 'x'
     #------------------------------------------------------------------#
     #   mosaic              马赛克数据增强。
     #   mosaic_prob         每个step有多少概率使用mosaic数据增强，默认50%。
@@ -139,25 +130,21 @@ if __name__ == "__main__":
     label_smoothing     = 0
 
     #----------------------------------------------------------------------------------------------------------------------------#
-    #   训练分为两个阶段，分别是冻结阶段和解冻阶段。设置冻结阶段是为了满足机器性能不足的同学的训练需求。
-    #   冻结训练需要的显存较小，显卡非常差的情况下，可设置Freeze_Epoch等于UnFreeze_Epoch，Freeze_Train = True，此时仅仅进行冻结训练。
-    #      
-    #   在此提供若干参数设置建议，各位训练者根据自己的需求进行灵活调整：
-    #   （一）从整个模型的预训练权重开始训练： 
+    #   YOLO26 训练策略（对应 ultralytics optimizer="auto"）：
+    #   小数据集 + 预训练模型 → Adam 优化器，100 epochs 即可收敛
+    #
+    #   参数建议：
+    #   （一）加载预训练权重（推荐）：
     #       Adam：
-    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 100，Freeze_Train = True，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。（冻结）
-    #           Init_Epoch = 0，UnFreeze_Epoch = 100，Freeze_Train = False，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。（不冻结）
+    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 100，Freeze_Train = True，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。
+    #           Init_Epoch = 0，UnFreeze_Epoch = 100，Freeze_Train = False，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。
     #       SGD：
-    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 300，Freeze_Train = True，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。（冻结）
-    #           Init_Epoch = 0，UnFreeze_Epoch = 300，Freeze_Train = False，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。（不冻结）
-    #       其中：UnFreeze_Epoch可以在100-300之间调整。
-    #   （二）从0开始训练：
-    #       Init_Epoch = 0，UnFreeze_Epoch >= 300，Unfreeze_batch_size >= 16，Freeze_Train = False（不冻结训练）
-    #       其中：UnFreeze_Epoch尽量不小于300。optimizer_type = 'sgd'，Init_lr = 1e-2，mosaic = True。
-    #   （三）batch_size的设置：
-    #       在显卡能够接受的范围内，以大为好。显存不足与数据集大小无关，提示显存不足（OOM或者CUDA out of memory）请调小batch_size。
-    #       受到BatchNorm层影响，batch_size最小为2，不能为1。
-    #       正常情况下Freeze_batch_size建议为Unfreeze_batch_size的1-2倍。不建议设置的差距过大，因为关系到学习率的自动调整。
+    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 200，Freeze_Train = True，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。
+    #   （二）从零开始训练（不推荐）：
+    #       UnFreeze_Epoch >= 300，Unfreeze_batch_size >= 16，Freeze_Train = False，optimizer_type = 'sgd'，Init_lr = 1e-2，mosaic = True。
+    #   （三）batch_size：
+    #       显存不足请调小batch_size。受BatchNorm影响，batch_size最小为2。
+    #       正常情况下Freeze_batch_size建议为Unfreeze_batch_size的1-2倍。
     #----------------------------------------------------------------------------------------------------------------------------#
     #------------------------------------------------------------------#
     #   冻结阶段训练参数
@@ -180,11 +167,10 @@ if __name__ == "__main__":
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
     #   占用的显存较大，网络所有的参数都会发生改变
     #   UnFreeze_Epoch          模型总共训练的epoch
-    #                           SGD需要更长的时间收敛，因此设置较大的UnFreeze_Epoch
-    #                           Adam可以使用相对较小的UnFreeze_Epoch
+    #                           YOLO26 小数据集推荐 100 epochs
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 300
+    UnFreeze_Epoch      = 100
     Unfreeze_batch_size = 16
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
@@ -197,21 +183,24 @@ if __name__ == "__main__":
     #------------------------------------------------------------------#
     #------------------------------------------------------------------#
     #   Init_lr         模型的最大学习率
+    #                   Adam: 1e-3    SGD: 1e-2
     #   Min_lr          模型的最小学习率，默认为最大学习率的0.01
     #------------------------------------------------------------------#
-    Init_lr             = 1e-2
+    Init_lr             = 1e-3
     Min_lr              = Init_lr * 0.01
     #------------------------------------------------------------------#
     #   optimizer_type  使用到的优化器种类，可选的有adam、sgd
+    #                   YOLO26 推荐 adam（匹配ultralytics auto策略）
     #                   当使用Adam优化器时建议设置  Init_lr=1e-3
     #                   当使用SGD优化器时建议设置   Init_lr=1e-2
     #   momentum        优化器内部使用到的momentum参数
+    #                   Adam时作为beta1
     #   weight_decay    权值衰减，可防止过拟合
-    #                   adam会导致weight_decay错误，使用adam时建议设置为0。
+    #                   adam建议设置为0。
     #------------------------------------------------------------------#
-    optimizer_type      = "sgd"
+    optimizer_type      = "adam"
     momentum            = 0.937
-    weight_decay        = 5e-4
+    weight_decay        = 0
     #------------------------------------------------------------------#
     #   lr_decay_type   使用到的学习率下降方式，可选的有step、cos
     #------------------------------------------------------------------#
@@ -272,50 +261,24 @@ if __name__ == "__main__":
     #------------------------------------------------------#
     class_names, num_classes = get_classes(classes_path)
 
-    #----------------------------------------------------#
-    #   下载预训练权重
-    #----------------------------------------------------#
-    if pretrained:
-        if distributed:
-            if local_rank == 0:
-                download_weights(phi)  
-            dist.barrier()
-        else:
-            download_weights(phi)
-            
     #------------------------------------------------------#
-    #   创建yolo模型
+    #   创建YOLO26模型
     #------------------------------------------------------#
-    model = YoloBody(input_shape, num_classes, phi, pretrained=pretrained)
-
     if model_path != '':
-        #------------------------------------------------------#
-        #   权值文件请看README，百度网盘下载
-        #------------------------------------------------------#
+        # YOLO26: 构建模型时传入目标类别数（2类），然后从预训练权重加载
         if local_rank == 0:
-            print('Load weights {}.'.format(model_path))
-        
-        #------------------------------------------------------#
-        #   根据预训练权重的Key和模型的Key进行加载
-        #------------------------------------------------------#
-        model_dict      = model.state_dict()
-        pretrained_dict = torch.load(model_path, map_location = device)
-        load_key, no_load_key, temp_dict = [], [], {}
-        for k, v in pretrained_dict.items():
-            if k in model_dict.keys() and np.shape(model_dict[k]) == np.shape(v):
-                temp_dict[k] = v
-                load_key.append(k)
-            else:
-                no_load_key.append(k)
-        model_dict.update(temp_dict)
-        model.load_state_dict(model_dict)
-        #------------------------------------------------------#
-        #   显示没有匹配上的Key
-        #------------------------------------------------------#
+            print('Building YOLO26{} model for {} classes...'.format(phi, num_classes))
+        model = YoloBody(input_shape, num_classes, phi, pretrained=False)
+
         if local_rank == 0:
-            print("\nSuccessful Load Key:", str(load_key)[:500], "……\nSuccessful Load Key Num:", len(load_key))
-            print("\nFail To Load Key:", str(no_load_key)[:500], "……\nFail To Load Key num:", len(no_load_key))
-            print("\n\033[1;33;44m温馨提示，head部分没有载入是正常现象，Backbone部分没有载入是错误的。\033[0m")
+            print('Load YOLO26 pretrained weights from {}.'.format(model_path))
+        # YOLO26 模型加载预训练权重（自动处理 80→2 类别映射）
+        model.load_pretrained(model_path, device)
+    else:
+        # 从零开始训练（不推荐，但支持）
+        if local_rank == 0:
+            print('Building YOLO26{} model from scratch (no pretrained weights).'.format(phi))
+        model = YoloBody(input_shape, num_classes, phi, pretrained=False)
 
     #----------------------#
     #   获得损失函数
@@ -414,7 +377,8 @@ if __name__ == "__main__":
         #   冻结一定部分训练
         #------------------------------------#
         if Freeze_Train:
-            for param in model.backbone.parameters():
+            # YOLO26 backbone = layers 0-10 of the internal model
+            for param in model.model.model[:11].parameters():
                 param.requires_grad = False
 
         #-------------------------------------------------------------------#
@@ -524,7 +488,7 @@ if __name__ == "__main__":
                 #---------------------------------------#
                 lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
 
-                for param in model.backbone.parameters():
+                for param in model.model.model[:11].parameters():
                     param.requires_grad = True
 
                 epoch_step      = num_train // batch_size

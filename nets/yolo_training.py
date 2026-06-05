@@ -324,6 +324,7 @@ class BboxLoss(nn.Module):
         loss_iou    = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # 计算DFL损失
+        # YOLO26: reg_max=1 → DFL-Free, loss_dfl = 0
         if self.use_dfl:
             target_ltrb = bbox2dist(anchor_points, target_bboxes, self.reg_max)
             loss_dfl = self._df_loss(pred_dist[fg_mask].view(-1, self.reg_max + 1), target_ltrb[fg_mask]) * weight
@@ -366,13 +367,14 @@ def xywh2xyxy(x):
 
 # Criterion class for computing training losses
 class Loss:
-    def __init__(self, model): 
+    def __init__(self, model):
         self.bce    = nn.BCEWithLogitsLoss(reduction='none')
         self.stride = model.stride  # model strides
         self.nc     = model.num_classes  # number of classes
         self.no     = model.no
         self.reg_max = model.reg_max
-        
+
+        # YOLO26: reg_max=1 → DFL-Free
         self.use_dfl = model.reg_max > 1
         roll_out_thr = 64
 
@@ -381,6 +383,7 @@ class Loss:
                                             alpha=0.5,
                                             beta=6.0,
                                             roll_out_thr=roll_out_thr)
+        # reg_max=1 → use_dfl=False, no distribution prediction
         self.bbox_loss  = BboxLoss(model.reg_max - 1, use_dfl=self.use_dfl)
         self.proj       = torch.arange(model.reg_max, dtype=torch.float)
 
@@ -475,9 +478,11 @@ class Loss:
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
-        loss[0] *= 7.5  # box gain
-        loss[1] *= 0.5  # cls gain
-        loss[2] *= 1.5  # dfl gain
+        # YOLO26 loss gains
+        # DFL-Free: dfl loss always 0 (reg_max=1), box gain slightly increased
+        loss[0] *= 7.5  # box gain (CIoU)
+        loss[1] *= 0.5  # cls gain (BCE)
+        loss[2] *= 1.5  # dfl gain (always 0 for YOLO26 DFL-Free)
         return loss.sum() # loss(box, cls, dfl) # * batch_size
 
 def is_parallel(model):

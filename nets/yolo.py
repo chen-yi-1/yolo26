@@ -1,176 +1,217 @@
-import numpy as np
+"""
+YOLO26 model body — thin wrapper around ultralytics DetectionModel.
+
+Key YOLO26 differences from YOLOv8:
+  - end2end=True: dual head (one2one for NMS-Free inference, one2many for training)
+  - reg_max=1:    DFL-Free, direct bbox regression (no distribution)
+  - C3k2 blocks:  CSP with kernel-size-2 bottlenecks
+  - C2PSA:        cross-stage partial + self-attention in backbone
+"""
+
 import torch
 import torch.nn as nn
 
-from nets.backbone import Backbone, C2f, Conv
-from nets.yolo_training import weights_init
 from utils.utils_bbox import make_anchors
 
-def fuse_conv_and_bn(conv, bn):
-    # 混合Conv2d + BatchNorm2d 减少计算量
-    # Fuse Conv2d() and BatchNorm2d() layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/
-    fusedconv = nn.Conv2d(conv.in_channels,
-                          conv.out_channels,
-                          kernel_size=conv.kernel_size,
-                          stride=conv.stride,
-                          padding=conv.padding,
-                          dilation=conv.dilation,
-                          groups=conv.groups,
-                          bias=True).requires_grad_(False).to(conv.weight.device)
 
-    # 准备kernel
+def fuse_conv_and_bn(conv, bn):
+    """Fuse Conv2d + BatchNorm2d layers."""
+    fusedconv = nn.Conv2d(conv.in_channels, conv.out_channels,
+                          kernel_size=conv.kernel_size, stride=conv.stride,
+                          padding=conv.padding, dilation=conv.dilation,
+                          groups=conv.groups, bias=True).requires_grad_(False).to(conv.weight.device)
+
     w_conv = conv.weight.clone().view(conv.out_channels, -1)
     w_bn = torch.diag(bn.weight.div(torch.sqrt(bn.eps + bn.running_var)))
     fusedconv.weight.copy_(torch.mm(w_bn, w_conv).view(fusedconv.weight.shape))
 
-    # 准备bias
     b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device) if conv.bias is None else conv.bias
     b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
     fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
 
     return fusedconv
 
-class DFL(nn.Module):
-    # DFL模块
-    # Distribution Focal Loss (DFL) proposed in Generalized Focal Loss https://ieeexplore.ieee.org/document/9792391
-    def __init__(self, c1=16):
-        super().__init__()
-        self.conv   = nn.Conv2d(c1, 1, 1, bias=False).requires_grad_(False)
-        x           = torch.arange(c1, dtype=torch.float)
-        self.conv.weight.data[:] = nn.Parameter(x.view(1, c1, 1, 1))
-        self.c1     = c1
 
-    def forward(self, x):
-        # bs, self.reg_max * 4, 8400
-        b, c, a = x.shape
-        # bs, 4, self.reg_max, 8400 => bs, self.reg_max, 4, 8400 => b, 4, 8400
-        # 以softmax的方式，对0~16的数字计算百分比，获得最终数字。
-        return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
-        # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
-        
-#---------------------------------------------------#
-#   yolo_body
-#---------------------------------------------------#
+# YOLO26 architecture config (from ultralytics yolo26x.yaml)
+YOLO26_CFG = {
+    'end2end': True,
+    'reg_max': 1,
+    'scales': {
+        'n': [0.5, 0.25, 1024],
+        's': [0.5, 0.5, 1024],
+        'm': [0.5, 1.0, 512],
+        'l': [1.0, 1.0, 512],
+        'x': [1.0, 1.5, 512],
+    },
+    'backbone': [
+        [-1, 1, 'Conv', [64, 3, 2]],           # 0
+        [-1, 1, 'Conv', [128, 3, 2]],           # 1
+        [-1, 2, 'C3k2', [256, False, 0.25]],    # 2
+        [-1, 1, 'Conv', [256, 3, 2]],            # 3
+        [-1, 2, 'C3k2', [512, False, 0.25]],    # 4
+        [-1, 1, 'Conv', [512, 3, 2]],            # 5
+        [-1, 2, 'C3k2', [512, True]],            # 6
+        [-1, 1, 'Conv', [1024, 3, 2]],           # 7
+        [-1, 2, 'C3k2', [1024, True]],           # 8
+        [-1, 1, 'SPPF', [1024, 5, 3, True]],     # 9
+        [-1, 2, 'C2PSA', [1024]],                # 10
+    ],
+    'head': [
+        [-1, 1, 'nn.Upsample', ['None', 2, 'nearest']],            # 11
+        [[-1, 6], 1, 'Concat', [1]],                                # 12
+        [-1, 2, 'C3k2', [512, True]],                               # 13
+        [-1, 1, 'nn.Upsample', ['None', 2, 'nearest']],            # 14
+        [[-1, 4], 1, 'Concat', [1]],                                # 15
+        [-1, 2, 'C3k2', [256, True]],                               # 16
+        [-1, 1, 'Conv', [256, 3, 2]],                               # 17
+        [[-1, 13], 1, 'Concat', [1]],                               # 18
+        [-1, 2, 'C3k2', [512, True]],                               # 19
+        [-1, 1, 'Conv', [512, 3, 2]],                               # 20
+        [[-1, 10], 1, 'Concat', [1]],                               # 21
+        [-1, 1, 'C3k2', [1024, True, 0.5, True]],                  # 22
+        [[16, 19, 22], 1, 'Detect', ['nc']],                        # 23
+    ],
+}
+
+YOLO26_SCALES = YOLO26_CFG['scales']
+
+
 class YoloBody(nn.Module):
+    """YOLO26 model — ultralytics DetectionModel under the hood."""
+
     def __init__(self, input_shape, num_classes, phi, pretrained=False):
         super(YoloBody, self).__init__()
-        depth_dict          = {'n' : 0.33, 's' : 0.33, 'm' : 0.67, 'l' : 1.00, 'x' : 1.00,}
-        width_dict          = {'n' : 0.25, 's' : 0.50, 'm' : 0.75, 'l' : 1.00, 'x' : 1.25,}
-        deep_width_dict     = {'n' : 1.00, 's' : 1.00, 'm' : 0.75, 'l' : 0.50, 'x' : 0.50,}
-        dep_mul, wid_mul, deep_mul = depth_dict[phi], width_dict[phi], deep_width_dict[phi]
+        from ultralytics.nn.tasks import DetectionModel
 
-        base_channels       = int(wid_mul * 64)  # 64
-        base_depth          = max(round(dep_mul * 3), 1)  # 3
-        #-----------------------------------------------#
-        #   输入图片是3, 640, 640
-        #-----------------------------------------------#
+        if phi not in YOLO26_SCALES:
+            raise ValueError(f"YOLO26 phi '{phi}' not in {list(YOLO26_SCALES.keys())}")
 
-        #---------------------------------------------------#   
-        #   生成主干模型
-        #   获得三个有效特征层，他们的shape分别是：
-        #   256, 80, 80
-        #   512, 40, 40
-        #   1024 * deep_mul, 20, 20
-        #---------------------------------------------------#
-        self.backbone   = Backbone(base_channels, base_depth, deep_mul, phi, pretrained=pretrained)
+        cfg = {
+            'nc': num_classes, 'end2end': YOLO26_CFG['end2end'],
+            'reg_max': YOLO26_CFG['reg_max'], 'scales': YOLO26_CFG['scales'],
+            'backbone': YOLO26_CFG['backbone'], 'head': YOLO26_CFG['head'],
+            'scale': phi,
+        }
 
-        #------------------------加强特征提取网络------------------------# 
-        self.upsample   = nn.Upsample(scale_factor=2, mode="nearest")
-
-        # 1024 * deep_mul + 512, 40, 40 => 512, 40, 40
-        self.conv3_for_upsample1    = C2f(int(base_channels * 16 * deep_mul) + base_channels * 8, base_channels * 8, base_depth, shortcut=False)
-        # 768, 80, 80 => 256, 80, 80
-        self.conv3_for_upsample2    = C2f(base_channels * 8 + base_channels * 4, base_channels * 4, base_depth, shortcut=False)
-        
-        # 256, 80, 80 => 256, 40, 40
-        self.down_sample1           = Conv(base_channels * 4, base_channels * 4, 3, 2)
-        # 512 + 256, 40, 40 => 512, 40, 40
-        self.conv3_for_downsample1  = C2f(base_channels * 8 + base_channels * 4, base_channels * 8, base_depth, shortcut=False)
-
-        # 512, 40, 40 => 512, 20, 20
-        self.down_sample2           = Conv(base_channels * 8, base_channels * 8, 3, 2)
-        # 1024 * deep_mul + 512, 20, 20 =>  1024 * deep_mul, 20, 20
-        self.conv3_for_downsample2  = C2f(int(base_channels * 16 * deep_mul) + base_channels * 8, int(base_channels * 16 * deep_mul), base_depth, shortcut=False)
-        #------------------------加强特征提取网络------------------------# 
-        
-        ch              = [base_channels * 4, base_channels * 8, int(base_channels * 16 * deep_mul)]
-        self.shape      = None
-        self.nl         = len(ch)
-        # self.stride     = torch.zeros(self.nl)
-        self.stride     = torch.tensor([256 / x.shape[-2] for x in self.backbone.forward(torch.zeros(1, 3, 256, 256))])  # forward
-        self.reg_max    = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
-        self.no         = num_classes + self.reg_max * 4  # number of outputs per anchor
+        self.model = DetectionModel(cfg, ch=3, nc=num_classes)
         self.num_classes = num_classes
-        
-        c2, c3   = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], num_classes)  # channels
-        self.cv2 = nn.ModuleList(nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch)
-        self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, num_classes, 1)) for x in ch)
-        if not pretrained:
-            weights_init(self)
-        self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+        self.phi = phi
+        self.input_shape = input_shape
 
+        # --- Metadata for native pipeline ---
+        detect = self.model.model[-1]
+        self.nl = detect.nl
+        self.reg_max = detect.reg_max
+        self.no = detect.no
+        self.feat_indices = [16, 19, 22]  # P3, P4, P5 layer indices
+        self.stride = detect.stride
+        self.ch = [detect.cv2[i][0].conv.in_channels for i in range(self.nl)]
+
+        # Shape tracking for anchor grid caching
+        self._shape = None
+        self._anchors = None
+        self._strides = None
 
     def fuse(self):
         print('Fusing layers... ')
         for m in self.modules():
-            if type(m) is Conv and hasattr(m, 'bn'):
-                m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
-                delattr(m, 'bn')  # remove batchnorm
-                m.forward = m.forward_fuse  # update forward
+            if hasattr(m, 'conv') and hasattr(m, 'bn'):
+                if isinstance(m.conv, nn.Conv2d) and isinstance(m.bn, nn.BatchNorm2d):
+                    m.conv = fuse_conv_and_bn(m.conv, m.bn)
+                    delattr(m, 'bn')
         return self
-    
+
+    def _run_layers(self, x):
+        """Run input through all layers, tracking intermediate outputs.
+        Mirrors ultralytics DetectionModel._forward_once."""
+        y = []
+        for m in self.model.model:
+            if m.f != -1:
+                if isinstance(m.f, int):
+                    x = y[m.f]
+                else:
+                    # -1 in list means current x (previous layer's output)
+                    x = [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            y.append(x)
+        return y
+
     def forward(self, x):
-        #  backbone
-        feat1, feat2, feat3 = self.backbone.forward(x)
-        
-        #------------------------加强特征提取网络------------------------# 
-        # 1024 * deep_mul, 20, 20 => 1024 * deep_mul, 40, 40
-        P5_upsample = self.upsample(feat3)
-        # 1024 * deep_mul, 40, 40 cat 512, 40, 40 => 1024 * deep_mul + 512, 40, 40
-        P4          = torch.cat([P5_upsample, feat2], 1)
-        # 1024 * deep_mul + 512, 40, 40 => 512, 40, 40
-        P4          = self.conv3_for_upsample1(P4)
+        """
+        Training forward pass.
+        Returns (dbox, cls, feat_list, anchors, strides) for the native Loss.
+        """
+        y = self._run_layers(x)
 
-        # 512, 40, 40 => 512, 80, 80
-        P4_upsample = self.upsample(P4)
-        # 512, 80, 80 cat 256, 80, 80 => 768, 80, 80
-        P3          = torch.cat([P4_upsample, feat1], 1)
-        # 768, 80, 80 => 256, 80, 80
-        P3          = self.conv3_for_upsample2(P3)
+        # Extract P3, P4, P5 feature maps from the Detect head inputs
+        feats = [y[i] for i in self.feat_indices]  # [B,C,H,W] × 3
 
-        # 256, 80, 80 => 256, 40, 40
-        P3_downsample = self.down_sample1(P3)
-        # 512, 40, 40 cat 256, 40, 40 => 768, 40, 40
-        P4 = torch.cat([P3_downsample, P4], 1)
-        # 768, 40, 40 => 512, 40, 40
-        P4 = self.conv3_for_downsample1(P4)
+        # Build anchor grid (cached by shape)
+        shape = feats[0].shape
+        if self._shape != shape:
+            self._anchors, self._strides = (
+                z.transpose(0, 1) for z in make_anchors(feats, self.stride, 0.5)
+            )
+            self._shape = shape
 
-        # 512, 40, 40 => 512, 20, 20
-        P4_downsample = self.down_sample2(P4)
-        # 512, 20, 20 cat 1024 * deep_mul, 20, 20 => 1024 * deep_mul + 512, 20, 20
-        P5 = torch.cat([P4_downsample, feat3], 1)
-        # 1024 * deep_mul + 512, 20, 20 => 1024 * deep_mul, 20, 20
-        P5 = self.conv3_for_downsample2(P5)
-        #------------------------加强特征提取网络------------------------# 
-        # P3 256, 80, 80
-        # P4 512, 40, 40
-        # P5 1024 * deep_mul, 20, 20
-        shape = P3.shape  # BCHW
-        
-        # P3 256, 80, 80 => num_classes + self.reg_max * 4, 80, 80
-        # P4 512, 40, 40 => num_classes + self.reg_max * 4, 40, 40
-        # P5 1024 * deep_mul, 20, 20 => num_classes + self.reg_max * 4, 20, 20
-        x = [P3, P4, P5]
+        # Apply Detect head's cv2 (box) and cv3 (cls) to each scale
+        # Matching the original YoloBody pattern: torch.cat((cv2(feat), cv3(feat)), 1)
+        detect = self.model.model[-1]
+        x_head = []
         for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            x_head.append(torch.cat((detect.cv2[i](feats[i]), detect.cv3[i](feats[i])), 1))
 
-        if self.shape != shape:
-            self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
-            self.shape = shape
-        
-        # num_classes + self.reg_max * 4 , 8400 =>  cls num_classes, 8400; 
-        #                                           box self.reg_max * 4, 8400
-        box, cls        = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2).split((self.reg_max * 4, self.num_classes), 1)
-        # origin_cls      = [xi.split((self.reg_max * 4, self.num_classes), 1)[1] for xi in x]
-        dbox            = self.dfl(box)
-        return dbox, cls, x, self.anchors.to(dbox.device), self.strides.to(dbox.device)
+        # Concatenate across spatial dimensions
+        x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x_head], 2)
+
+        # Split: reg_max*4 channels for box, num_classes channels for cls
+        box, cls = x_cat.split((self.reg_max * 4, self.num_classes), 1)
+
+        # DFL-Free: box is already direct regression (reg_max=1), no DFL softmax needed
+        # box shape: [B, 4, N]
+        self.anchors = self._anchors
+        self.strides = self._strides
+        return box, cls, x_head, self._anchors.to(box.device), self._strides.to(box.device)
+
+    def load_pretrained(self, model_path, device='cpu'):
+        """
+        Load pretrained weights from yolo26x.pt (ultralytics checkpoint).
+
+        Maps checkpoint keys (model.X...) to our wrapper keys (model.model.X...).
+        Handles 80→2 class remapping automatically.
+        """
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
+        if 'model' in checkpoint:
+            src_state = checkpoint['model'].state_dict()
+        else:
+            src_state = checkpoint
+
+        # Map checkpoint keys to our model's state dict
+        # Checkpoint: model.0.conv.weight → Our model: model.model.0.conv.weight
+        dst_state = self.state_dict()
+
+        # Build a key lookup: strip leading 'model.' from checkpoint keys
+        # Checkpoint has "model.X..." → our model has "model.model.X..."
+        matched, skipped = {}, []
+
+        for ckpt_key, v in src_state.items():
+            if 'num_batches_tracked' in ckpt_key:
+                continue
+            # Map: model.X... → model.model.X...
+            our_key = 'model.' + ckpt_key
+            if our_key in dst_state:
+                if dst_state[our_key].shape == v.shape:
+                    matched[our_key] = v
+                else:
+                    skipped.append(f"{ckpt_key}: src{v.shape} → dst{dst_state[our_key].shape}")
+            else:
+                skipped.append(f"{ckpt_key}: not in target")
+
+        self.load_state_dict(matched, strict=False)
+
+        print(f"Loaded {len(matched)}/{len(matched) + len(skipped)} weight tensors")
+        if skipped:
+            cls_skipped = [s for s in skipped if 'cv3' in s and 'bias' in s]
+            print(f"\nSkipped {len(skipped)} keys ({len(cls_skipped)} class-head: 80→{self.num_classes})")
+        return len(matched), skipped

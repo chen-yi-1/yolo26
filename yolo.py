@@ -25,21 +25,21 @@ class YOLO(object):
         #   验证集损失较低不代表mAP较高，仅代表该权值在验证集上泛化性能较好。
         #   如果出现shape不匹配，同时要注意训练时的model_path和classes_path参数的修改
         #--------------------------------------------------------------------------#
-        "model_path"        : 'model_data/yolov8_s.pth',
-        "classes_path"      : 'model_data/coco_classes.txt',
+        "model_path"        : 'reference/yolo26x.pt',
+        "classes_path"      : 'model_data/voc_classes.txt',
         #---------------------------------------------------------------------#
         #   输入图片的大小，必须为32的倍数。
         #---------------------------------------------------------------------#
         "input_shape"       : [640, 640],
         #------------------------------------------------------#
-        #   所使用到的yolov8的版本：
-        #   n : 对应yolov8_n
-        #   s : 对应yolov8_s
-        #   m : 对应yolov8_m
-        #   l : 对应yolov8_l
-        #   x : 对应yolov8_x
+        #   所使用到的YOLO26的版本：
+        #   n : YOLO26n (轻量)
+        #   s : YOLO26s
+        #   m : YOLO26m
+        #   l : YOLO26l
+        #   x : YOLO26x (最强，55.6M)
         #------------------------------------------------------#
-        "phi"               : 's',
+        "phi"               : 'x',
         #---------------------------------------------------------------------#
         #   只有得分大于置信度的预测框会被保留下来
         #---------------------------------------------------------------------#
@@ -97,12 +97,21 @@ class YOLO(object):
     #---------------------------------------------------#
     def generate(self, onnx=False):
         #---------------------------------------------------#
-        #   建立yolo模型，载入yolo模型的权重
+        #   建立YOLO26模型，载入权重
         #---------------------------------------------------#
         self.net    = YoloBody(self.input_shape, self.num_classes, self.phi)
-        
+
         device      = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.net.load_state_dict(torch.load(self.model_path, map_location=device))
+        checkpoint  = torch.load(self.model_path, map_location=device, weights_only=False)
+
+        # 判断权重格式：ultralytics .pt 还是 native .pth
+        if 'model' in checkpoint:
+            # Ultralytics 格式（yolo26x.pt）→ 使用 load_pretrained
+            self.net.load_pretrained(self.model_path, device)
+        else:
+            # Native 格式（训练输出的 .pth）
+            self.net.load_state_dict(checkpoint)
+
         self.net    = self.net.fuse().eval()
         print('{} model, and classes loaded.'.format(self.model_path))
         if not onnx:
