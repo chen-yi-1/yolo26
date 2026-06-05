@@ -35,12 +35,25 @@ def resize_image(image, size, letterbox_image):
     return new_image
 
 #---------------------------------------------------#
-#   获得类
+#   获得类（支持 .yaml 和 .txt）
 #---------------------------------------------------#
 def get_classes(classes_path):
-    with open(classes_path, encoding='utf-8') as f:
-        class_names = f.readlines()
-    class_names = [c.strip() for c in class_names]
+    if classes_path.endswith('.yaml') or classes_path.endswith('.yml'):
+        import yaml
+        with open(classes_path, encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        # dataset.yaml format: names: {0: person, 1: car, ...}
+        names = data.get('names', {})
+        if isinstance(names, dict):
+            class_names = [names[i] for i in range(len(names))]
+        elif isinstance(names, list):
+            class_names = names
+        else:
+            raise ValueError(f"Cannot parse 'names' from {classes_path}")
+    else:
+        with open(classes_path, encoding='utf-8') as f:
+            class_names = f.readlines()
+        class_names = [c.strip() for c in class_names]
     return class_names, len(class_names)
 
 #---------------------------------------------------#
@@ -83,5 +96,3 @@ def show_config(**kwargs):
     for key, value in kwargs.items():
         print('|%25s | %40s|' % (str(key), str(value)))
     print('-' * 70)
-        
-# download_weights removed — YOLO26 loads full pretrained model via YoloBody.load_pretrained()

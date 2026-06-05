@@ -1,0 +1,7 @@
+names:
+  0: healthy
+  1: unhealthy
+nc: 2
+path: /home/zhuye/yolo26/datasets
+train: images/train
+val: images/val
