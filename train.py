@@ -15,6 +15,23 @@ def _add_per_epoch_plotting(model):
             plot_results(file=trainer.csv)
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
 
+
+def _train_with_resume(model, **train_kwargs):
+    """调用 model.train()，并绕过 PyTorch 2.6+ 的 weights_only=True 默认值。
+
+    PyTorch 2.6+ 把 torch.load 默认改为 weights_only=True，而 ultralytics 内部
+    check_resume 调用 torch.load 时未显式传 weights_only=False，导致无法读取
+    checkpoint 中的 optimizer state dict，从而误报 "not a resumable training checkpoint"。
+    """
+    import torch
+
+    _orig_load = torch.load
+    torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, 'weights_only': False})
+    try:
+        return model.train(**train_kwargs)
+    finally:
+        torch.load = _orig_load
+
 '''
 训练自己的目标检测模型一定需要注意以下几点：
 1、训练前仔细检查自己的格式是否满足要求，该库要求数据集格式为YOLO格式，需要准备好的内容有输入图片和标签
@@ -204,8 +221,51 @@ if __name__ == "__main__":
     train_name = f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     #------------------------------------------------------#
-    #   显示训练配置
+    #   断点续训：Init_Epoch > 0 时自动发现最新 checkpoint
     #------------------------------------------------------#
+    if Init_Epoch > 0:
+        base_dir = os.path.join('runs', 'detect', save_dir)
+        checkpoints = []
+        if os.path.isdir(base_dir):
+            checkpoints = sorted(
+                [os.path.join(base_dir, d, 'weights', 'last.pt')
+                 for d in os.listdir(base_dir)
+                 if os.path.isfile(os.path.join(base_dir, d, 'weights', 'last.pt'))],
+                key=os.path.getmtime,
+            )
+        if checkpoints:
+            model_path = checkpoints[-1]
+            # 从 checkpoint 路径反推 train_name，续训结果写回原目录
+            # 路径格式: runs/detect/{save_dir}/{train_name}/weights/last.pt
+            resume_train_name = os.path.basename(os.path.dirname(os.path.dirname(model_path)))
+            # 验证 checkpoint 是否包含可续训状态（epoch + optimizer）
+            import torch
+            ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
+            ckpt_epoch = ckpt.get('epoch', None)
+            if ckpt_epoch is None:
+                print(f"\n[Error] Checkpoint missing epoch/optimizer state, cannot resume!")
+                print(f"  {model_path}")
+                print(f"  This is unexpected for a last.pt saved during training. Possible causes:")
+                print(f"  1. Training was killed before completing the first epoch")
+                print(f"  2. The file was corrupted or overwritten")
+                print(f"  3. PyTorch version mismatch when loading the checkpoint")
+                raise RuntimeError("Resume failed: checkpoint has no training state. "
+                                   "Set Init_Epoch=0 or fix the checkpoint path.")
+            actual_init = ckpt_epoch + 1  # ckpt epoch is 0-indexed → Init_Epoch is 1-indexed
+            if actual_init != Init_Epoch:
+                print(f"\n[Warn] Init_Epoch={Init_Epoch} but checkpoint last completed epoch={actual_init}.")
+                print(f"       Phase/skip logic will use Init_Epoch={Init_Epoch}, but training will")
+                print(f"       resume from epoch {actual_init+1} per the checkpoint state.")
+            print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
+            print(f"  {model_path}")
+            print(f"  Results will be saved to: runs/detect/{save_dir}/{resume_train_name}/")
+            train_name = resume_train_name
+        else:
+            print(f"\n[Error] Init_Epoch={Init_Epoch} but no checkpoint found under {base_dir}.")
+            print(f"  Set Init_Epoch=0 to start fresh training, or ensure a training run exists.")
+            raise RuntimeError("Resume failed: no checkpoint found. "
+                               "Set Init_Epoch=0 or check save_dir.")
+
     from utils.utils import show_config
     show_config(
         model_path = model_path, data_yaml = data_yaml, input_shape = input_shape,
@@ -270,6 +330,7 @@ if __name__ == "__main__":
         seed=seed,
         project=save_dir,
         name=train_name,
+        exist_ok=True,              # 允许续训时覆盖已有目录
         save_period=save_period,
         val=eval_flag,
         plots=True,
@@ -296,19 +357,24 @@ if __name__ == "__main__":
     # ================================ #
     #   Phase 1: Freeze Backbone
     # ================================ #
+    # 判断是否从断点续训：Init_Epoch > 0 表示 model_path 指向的是一个训练保存的 checkpoint
+    is_resuming = Init_Epoch > 0
     freeze_phase_epochs = Freeze_Epoch - Init_Epoch
     freeze_save_dir = None  # 记录 Phase 1 的实际保存路径，供 Phase 2 使用
     if Freeze_Train and freeze_phase_epochs > 0:
-        print(f"\n[Phase 1] Freezing backbone for {freeze_phase_epochs} epochs (batch={Freeze_batch_size})")
+        print(f"\n[Phase 1] Freezing backbone for {freeze_phase_epochs} epochs "
+              f"(epoch {Init_Epoch}→{Freeze_Epoch}, batch={Freeze_batch_size})"
+              f"{' [resume]' if is_resuming else ''}")
         model = YOLO(model_path)
         _add_per_epoch_plotting(model)
-        model.train(
+        _train_with_resume(model,
             **train_args,
             epochs=Freeze_Epoch,
             batch=Freeze_batch_size,
-            warmup_epochs=3.0,
+            warmup_epochs=0 if is_resuming else 3.0,
             close_mosaic=0,             # 冻结阶段不关闭mosaic
             freeze=10,                  # 冻结前10层（backbone）
+            resume=is_resuming,
         )
         freeze_save_dir = str(model.trainer.save_dir)
 
@@ -317,24 +383,29 @@ if __name__ == "__main__":
     # ================================ #
     remaining = UnFreeze_Epoch - max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
     if remaining > 0:
-        print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs (batch={Unfreeze_batch_size})")
-        # Phase 1 运行过则从 last.pt 继续；否则从预训练权重开始
+        start_epoch = max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
+        print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs "
+              f"(epoch {start_epoch}→{UnFreeze_Epoch}, batch={Unfreeze_batch_size})"
+              f"{' [resume]' if (freeze_save_dir is not None or is_resuming) else ''}")
+        # Phase 1 运行过则从 last.pt 继续；否则从用户指定的 model_path
         if freeze_save_dir is not None:
             last_pt = os.path.join(freeze_save_dir, 'weights', 'last.pt')
+            resume_phase2 = True   # Phase 1 刚跑完，last.pt 一定是训练断点
         else:
             last_pt = model_path
+            resume_phase2 = is_resuming   # 只有用户传入的是训练断点时才 resume
 
         close_mosaic_unfreeze = int(UnFreeze_Epoch * (1.0 - special_aug_ratio)) if mosaic else 0
         model = YOLO(last_pt)
         _add_per_epoch_plotting(model)
-        model.train(
+        _train_with_resume(model,
             **train_args,
             epochs=UnFreeze_Epoch,
             batch=Unfreeze_batch_size,
-            warmup_epochs=0,            # 解冻阶段不再warmup
+            warmup_epochs=0 if resume_phase2 else 3.0,
             close_mosaic=close_mosaic_unfreeze,
             freeze=None,                # 解冻所有层
-            resume=True,
+            resume=resume_phase2,
         )
         final_save_dir = str(model.trainer.save_dir)
     elif freeze_save_dir is not None:
