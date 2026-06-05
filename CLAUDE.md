@@ -50,6 +50,14 @@ All training params (optimizer, LR, augmentation, loss gains) are passed directl
 
 Config section at the top of `if __name__ == "__main__":` uses the same parameter names as the old codebase (`Freeze_Epoch`, `Freeze_Train`, `Freeze_batch_size`, etc.) for familiarity.
 
+**Init_Epoch and resume:** `Init_Epoch > 0` triggers resume mode:
+- Auto-discovers the latest `last.pt` under `runs/detect/{save_dir}/`, validates it has `epoch`/`optimizer` state
+- Extracts `train_name` from the checkpoint path so results write back to the same directory
+- `_train_with_resume()` monkey-patches `torch.load` to force `weights_only=False` (required for PyTorch 2.6+ compatibility with ultralytics)
+- When checkpoint epoch ≠ `Init_Epoch`, warns but respects `Init_Epoch` for phase/skip logic; actual resume epoch is determined by the checkpoint
+- Phase 1 also supports resume when `Init_Epoch > 0` and `Init_Epoch < Freeze_Epoch`
+- `_add_per_epoch_plotting()` callback updates `results.png` after each epoch so curves are visible even if training is interrupted
+
 ### Inference (`yolo.py`)
 `YOLO` class wraps `ultralytics.YOLO`. Methods:
 - `detect_image(image, crop, count)` — PIL Image → detect → draw boxes with Chinese labels
