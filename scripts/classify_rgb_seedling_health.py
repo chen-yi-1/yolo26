@@ -136,8 +136,8 @@ def classify_metrics_csv(input_csv, output_csv):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Classify seedling health from RGB vegetation metrics CSV.")
-    parser.add_argument("--input", required=True, help="Input metrics.csv from rgb_vegetation_metrics.py.")
-    parser.add_argument("--output", required=True, help="Output CSV with health_status, confidence, and reason.")
+    parser.add_argument("--input", default="dataset/metrics/metrics.csv", help="Input metrics.csv from rgb_vegetation_metrics.py (default: dataset/metrics/metrics.csv).")
+    parser.add_argument("--output", default="dataset/metrics/classified.csv", help="Output CSV with health_status, confidence, and reason (default: dataset/metrics/classified.csv).")
     return parser.parse_args()
 
 

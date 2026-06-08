@@ -146,8 +146,8 @@ def process_directory(input_dir, output_dir, threshold, recursive=False, overlay
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Calculate RGB vegetation metrics for seedling images.")
-    parser.add_argument("--input", required=True, help="Input image directory.")
-    parser.add_argument("--output", required=True, help="Output directory for CSV, masks, and overlays.")
+    parser.add_argument("--input", default="raw_datas", help="Input image directory (default: raw_datas).")
+    parser.add_argument("--output", default="dataset/metrics", help="Output directory for CSV, masks, and overlays (default: dataset/metrics).")
     parser.add_argument("--threshold", type=float, default=0.1, help="ExG threshold for vegetation mask.")
     parser.add_argument("--recursive", action="store_true", help="Process nested image directories.")
     parser.add_argument("--overlay-alpha", type=float, default=0.4, help="Green overlay opacity from 0 to 1.")

@@ -10,7 +10,9 @@ logs/
 runs/
 model_data/
 .temp_map_out/
-
+dataset/
+raw_datas/
+docs/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
