@@ -88,6 +88,12 @@ def preprocess_input(image):
     image /= 255.0
     return image
 
+def measure_text(draw, text, font):
+    if hasattr(draw, "textbbox"):
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        return right - left, bottom - top
+    return draw.textsize(text, font)
+
 def show_config(**kwargs):
     print('Configurations:')
     print('-' * 70)

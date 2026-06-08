@@ -1,5 +1,6 @@
 # ignore map, miou, datasets
 map_out/
+img_out/
 miou_out/
 VOCdevkit/
 datasets/

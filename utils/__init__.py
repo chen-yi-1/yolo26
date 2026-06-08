@@ -4,6 +4,6 @@ from .utils import (
     get_classes,
     seed_everything,
     preprocess_input,
+    measure_text,
     show_config,
 )
-from .utils_map import get_map, get_coco_map

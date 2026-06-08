@@ -1,10 +1,13 @@
 torch
 torchvision
+ultralytics
 tensorboard
 scipy
 numpy
+PyYAML
 matplotlib
 opencv_python_headless
 tqdm
 Pillow
 h5py
+thop

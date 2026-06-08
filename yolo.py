@@ -8,7 +8,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO as UltralyticsYOLO
 
-from utils.utils import (cvtColor, get_classes, preprocess_input,
+from utils.utils import (cvtColor, get_classes, measure_text, preprocess_input,
                          resize_image, show_config)
 
 
@@ -127,7 +127,7 @@ class YOLO(object):
             right = min(image.size[0], np.floor(right).astype('int32'))
 
             label = '{} {:.2f}'.format(predicted_class, score)
-            label_size = draw.textsize(label, font)
+            label_size = measure_text(draw, label, font)
             label = label.encode('utf-8')
             print(label, top, left, bottom, right)
 
@@ -221,43 +221,3 @@ class YOLO(object):
         if exported and model_path and str(exported) != model_path:
             shutil.move(str(exported), model_path)
         print(f'Onnx model exported to {model_path}')
-
-    # --------------------------------------------------- #
-    #   Get mAP detection results
-    # --------------------------------------------------- #
-    def get_map_txt(self, image_id, image, class_names, map_out_path):
-        f = open(os.path.join(map_out_path, "detection-results/" + image_id + ".txt"), "w", encoding='utf-8')
-        image = cvtColor(image)
-
-        results = self.model.predict(
-            image,
-            imgsz=self.input_shape[0],
-            conf=self.confidence,
-            iou=self.nms_iou,
-            verbose=False,
-        )
-        result = results[0]
-
-        if result.boxes is None or len(result.boxes) == 0:
-            f.close()
-            return
-
-        top_boxes = result.boxes.xyxy.cpu().numpy()
-        top_conf = result.boxes.conf.cpu().numpy()
-        top_label = result.boxes.cls.cpu().numpy().astype(np.int32)
-
-        for i, c in list(enumerate(top_label)):
-            predicted_class = self.class_names[int(c)]
-            box = top_boxes[i]
-            score = str(top_conf[i])
-
-            left, top, right, bottom = box
-            if predicted_class not in class_names:
-                continue
-
-            f.write("%s %s %s %s %s %s\n" % (
-                predicted_class, score[:6],
-                str(int(left)), str(int(top)),
-                str(int(right)), str(int(bottom))
-            ))
-        f.close()

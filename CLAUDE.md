@@ -18,12 +18,10 @@ YOLO26 key traits:
 # Install dependencies
 pip install torch torchvision ultralytics
 
-# Prepare dataset (VOC → YOLO format conversion)
-# 1. Place images in VOCdevkit/VOC2007/JPEGImages/
-# 2. Place XML annotations in VOCdevkit/VOC2007/Annotations/
-# 3. Edit voc_annotation.py: set classes_path
-python voc_annotation.py       # generates 2007_train.txt, 2007_val.txt
-# 4. Create dataset.yaml pointing to the generated txt files
+# Prepare dataset (official Ultralytics YOLO format)
+# 1. Place images in datasets/images/train and datasets/images/val
+# 2. Place YOLO labels in datasets/labels/train and datasets/labels/val
+# 3. Edit dataset.yaml: path, train, val, nc, names
 
 # Train (edit train.py config section first)
 python train.py
@@ -32,8 +30,8 @@ python train.py
 python predict.py              # interactive: input image path to detect
 # Modes in predict.py: predict / video / fps / dir_predict / heatmap / export_onnx
 
-# Evaluate mAP (VOC-format ground truth required)
-python get_map.py              # map_mode 0=full VOC, 4=COCO via pycocotools
+# Evaluate mAP through official ultralytics validation
+python get_map.py              # edit model_path/data_yaml/split first
 
 # View model FLOPs & params
 python summary.py              # edit phi first
@@ -53,8 +51,10 @@ Config section at the top of `if __name__ == "__main__":` uses the same paramete
 **Init_Epoch and resume:** `Init_Epoch > 0` triggers resume mode:
 - Auto-discovers the latest `last.pt` under `runs/detect/{save_dir}/`, validates it has `epoch`/`optimizer` state
 - Extracts `train_name` from the checkpoint path so results write back to the same directory
-- `_train_with_resume()` monkey-patches `torch.load` to force `weights_only=False` (required for PyTorch 2.6+ compatibility with ultralytics)
+- `torch_load_weights_only_false()` temporarily patches `torch.load` to force `weights_only=False` during resume operations (required for PyTorch 2.6+ compatibility with ultralytics)
 - When checkpoint epoch ≠ `Init_Epoch`, warns but respects `Init_Epoch` for phase/skip logic; actual resume epoch is determined by the checkpoint
+- Fresh two-phase training writes separate run directories: `{train_name}_freeze` and `{train_name}_unfreeze`
+- Resume training writes back to the checkpoint's existing run directory
 - Phase 1 also supports resume when `Init_Epoch > 0` and `Init_Epoch < Freeze_Epoch`
 - `_add_per_epoch_plotting()` callback updates `results.png` after each epoch so curves are visible even if training is interrupted
 
@@ -63,24 +63,21 @@ Config section at the top of `if __name__ == "__main__":` uses the same paramete
 - `detect_image(image, crop, count)` — PIL Image → detect → draw boxes with Chinese labels
 - `get_FPS(image, test_interval)` — FPS benchmark
 - `detect_heatmap(image, save_path)` — class-activation heatmap from `one2one` branch feats
-- `get_map_txt(image_id, image, class_names, out_path)` — dump detections for mAP
 - `convert_to_onnx(simplify, path)` — ONNX export
 
 Supports letterbox resize, confidence/NMS filtering, and Chinese font rendering (simhei.ttf).
 
 ### Evaluation (`get_map.py`)
-Computes VOC mAP (mode 0-3) or COCO mAP via pycocotools (mode 4). Uses `YOLO.get_map_txt()` with low confidence threshold to capture all possible detections, then matches against VOC XML ground truth. Actual mAP computation logic lives in `utils/utils_map.py`.
+Runs official `ultralytics.YOLO.val()` against `dataset.yaml`. Use `split="val"` for the validation set, or add a `test:` entry to `dataset.yaml` and set `split="test"`.
 
 ### Utility files
 
 | File | Purpose |
 |---|---|
-| `utils/utils.py` | `cvtColor`, `get_classes`, `seed_everything`, `preprocess_input`, `resize_image`, `show_config` |
-| `utils/utils_map.py` | VOC mAP computation + COCO mAP via pycocotools |
-| `voc_annotation.py` | VOC XML annotations → YOLO-format txt files (train/val splits) |
+| `utils/utils.py` | `cvtColor`, `get_classes`, `measure_text`, `seed_everything`, `preprocess_input`, `resize_image`, `show_config` |
 
 ### Gitignored directories
-`model_data/`, `VOCdevkit/`, `logs/`, `datasets/` — not tracked. Classes txt, model weights (`yolo26x.pt`), and fonts go in `model_data/`.
+`model_data/`, `logs/`, `datasets/` — not tracked. Model weights (`yolo26x.pt`) and fonts go in `model_data/`.
 
 ## Behavioral Guidelines
 

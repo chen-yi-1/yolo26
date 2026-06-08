@@ -4,16 +4,31 @@
 import datetime
 import os
 import shutil
+from contextlib import contextmanager
 
 import torch
-from ultralytics import YOLO
-from ultralytics.utils.plotting import plot_results
 
-# PyTorch 2.6+ 默认 torch.load(weights_only=True)，ultralytics 的 check_resume
-# 未适配此变更，导致 resume 时误报 "not a resumable training checkpoint"。
-# 全局覆盖为 weights_only=False 以兼容。
-_torch_load = torch.load
-torch.load = lambda *a, **kw: _torch_load(*a, **{**kw, 'weights_only': False})
+
+@contextmanager
+def torch_load_weights_only_false():
+    """Temporarily force torch.load(weights_only=False) for ultralytics resume."""
+    torch_load = torch.load
+    torch.load = lambda *a, **kw: torch_load(*a, **{**kw, 'weights_only': False})
+    try:
+        yield
+    finally:
+        torch.load = torch_load
+
+
+def phase_train_names(train_name, is_resuming):
+    if is_resuming:
+        return train_name, train_name
+    return f"{train_name}_freeze", f"{train_name}_unfreeze"
+
+
+def phase2_epochs(init_epoch, freeze_epoch, unfreeze_epoch, freeze_train):
+    start_epoch = max(init_epoch, freeze_epoch if freeze_train else init_epoch)
+    return unfreeze_epoch - start_epoch
 
 
 def _setup_callbacks(model, save_phase_ckpt=False):
@@ -26,6 +41,8 @@ def _setup_callbacks(model, save_phase_ckpt=False):
     final_eval() 会在 strip_optimizer 之后再次触发 on_fit_epoch_end，导致
     phase_last.pt 被覆盖为已剥离的版本。
     """
+    from ultralytics.utils.plotting import plot_results
+
     def on_fit_epoch_end(trainer):
         if trainer.csv.exists():
             plot_results(file=trainer.csv)
@@ -56,6 +73,8 @@ def _setup_callbacks(model, save_phase_ckpt=False):
    如果只是训练了几个Step是不会保存的，Epoch和Step的概念要捋清楚一下。
 '''
 if __name__ == "__main__":
+    from ultralytics import YOLO
+
     #---------------------------------#
     #   Cuda    是否使用Cuda
     #           没有GPU可以设置成False
@@ -128,7 +147,7 @@ if __name__ == "__main__":
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 50
+    Freeze_Epoch        = 5
     Freeze_batch_size   = 32
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
@@ -138,7 +157,7 @@ if __name__ == "__main__":
     #                           YOLO26 小数据集推荐 100 epochs
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 100
+    UnFreeze_Epoch      = 10
     Unfreeze_batch_size = 16
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
@@ -201,13 +220,10 @@ if __name__ == "__main__":
     #------------------------------------------------------------------#
     save_dir            = 'logs'
     #------------------------------------------------------------------#
-    #   eval_flag       是否在训练时进行评估，评估对象为验证集
-    #                   安装pycocotools库后，评估体验更佳。
+    #   eval_flag       是否在训练时进行评估，评估对象为 dataset.yaml 的验证集
     #   注意：ultralytics 默认每个epoch都验证一次，不支持eval_period间隔设置
     #   如需减少验证频率，需要使用回调函数自定义验证逻辑
-    #   此处获得的mAP会与get_map.py获得的会有所不同，原因有二：
-    #   （一）此处获得的mAP为验证集的mAP。
-    #   （二）此处设置评估参数较为保守，目的是加快评估速度。
+    #   get_map.py 使用同一个官方验证入口，可通过 split 选择 val/test。
     #------------------------------------------------------------------#
     eval_flag           = True
     #------------------------------------------------------------------#
@@ -247,7 +263,8 @@ if __name__ == "__main__":
             )
 
         model_path = ckpt_paths[-1]
-        ckpt = torch.load(model_path, map_location='cpu')
+        with torch_load_weights_only_false():
+            ckpt = torch.load(model_path, map_location='cpu')
         ckpt_epoch = ckpt.get('epoch', None)
         if ckpt_epoch is None:
             raise RuntimeError(
@@ -268,6 +285,8 @@ if __name__ == "__main__":
         print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
         print(f"  {model_path}")
         print(f"  Results will be saved to: runs/detect/{save_dir}/{train_name}/")
+
+    freeze_train_name, unfreeze_train_name = phase_train_names(train_name, Init_Epoch > 0)
 
     from utils.utils import show_config
     show_config(
@@ -330,7 +349,6 @@ if __name__ == "__main__":
         amp=fp16,
         seed=seed,
         project=save_dir,
-        name=train_name,
         exist_ok=True,
         save_period=save_period,
         val=eval_flag,
@@ -366,8 +384,9 @@ if __name__ == "__main__":
               f"{' [resume]' if is_resuming else ''}")
         model = YOLO(model_path)
         _setup_callbacks(model, save_phase_ckpt=True)
-        model.train(
+        phase1_args = dict(
             **train_args,
+            name=freeze_train_name,
             epochs=Freeze_Epoch,
             batch=Freeze_batch_size,
             warmup_epochs=0 if is_resuming else 3.0,
@@ -375,12 +394,17 @@ if __name__ == "__main__":
             freeze=10,
             resume=is_resuming,
         )
+        if is_resuming:
+            with torch_load_weights_only_false():
+                model.train(**phase1_args)
+        else:
+            model.train(**phase1_args)
         freeze_save_dir = str(model.trainer.save_dir)
 
     # ================================ #
     #   Phase 2: Unfreeze All
     # ================================ #
-    remaining = UnFreeze_Epoch - max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
+    remaining = phase2_epochs(Init_Epoch, Freeze_Epoch, UnFreeze_Epoch, Freeze_Train)
     if remaining > 0:
         start_epoch = max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
 
@@ -401,8 +425,9 @@ if __name__ == "__main__":
         close_mosaic_unfreeze = int(remaining * (1.0 - special_aug_ratio)) if mosaic else 0
         model = YOLO(last_pt)
         _setup_callbacks(model, save_phase_ckpt=False)
-        model.train(
+        phase2_args = dict(
             **train_args,
+            name=unfreeze_train_name,
             epochs=remaining,
             batch=Unfreeze_batch_size,
             warmup_epochs=0 if resume_phase2 else 3.0,
@@ -410,6 +435,11 @@ if __name__ == "__main__":
             freeze=None,
             resume=resume_phase2,
         )
+        if resume_phase2:
+            with torch_load_weights_only_false():
+                model.train(**phase2_args)
+        else:
+            model.train(**phase2_args)
         final_save_dir = str(model.trainer.save_dir)
     elif freeze_save_dir is not None:
         final_save_dir = freeze_save_dir
