@@ -8,7 +8,6 @@ Medical_Datasets/
 lfw/
 logs/
 runs/
-model_data/
 .temp_map_out/
 dataset/
 raw_datas/
