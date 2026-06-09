@@ -29,7 +29,7 @@ datasets/
   labels/
     train/
     val/
-dataset.yaml
+  datasets.yaml
 ```
 
 Each label file should use normalized YOLO segmentation polygons:
@@ -38,7 +38,7 @@ Each label file should use normalized YOLO segmentation polygons:
 class_id x1 y1 x2 y2 x3 y3 ...
 ```
 
-Example `dataset.yaml`:
+Example `datasets/datasets.yaml`:
 
 ```yaml
 path: /home/zhuye/yolo26/datasets
@@ -50,7 +50,14 @@ names:
   1: abnormal
 ```
 
-Prepare data directly in the Ultralytics format above.
+After editing labels under `dataset/labels`, prepare the Ultralytics layout:
+
+```bash
+python scripts/prepare_yolo_dataset.py --source dataset --output datasets
+```
+
+This writes `datasets/images/{train,val}`, `datasets/labels/{train,val}`, and
+`datasets/datasets.yaml`.
 
 ## Train
 
@@ -59,6 +66,9 @@ Edit the config section in `train.py`, then run:
 ```bash
 python train.py
 ```
+
+`train.py` refreshes `datasets/` from `dataset/` before training, so manual
+edits in `dataset/labels` are picked up automatically.
 
 Training uses a two-phase freeze/unfreeze strategy with YOLO26 `-seg` weights:
 
@@ -75,7 +85,7 @@ Edit `yolo.py` defaults if needed:
 
 ```python
 "model_path": "model_data/yolo26x-seg.pt"
-"classes_path": "dataset.yaml"
+"classes_path": "datasets/datasets.yaml"
 ```
 
 Prediction overlays instance masks, mask contours, boxes, class names, and confidence scores.
@@ -98,7 +108,7 @@ Supported modes in `predict.py`:
 ## Validate mAP
 
 `get_map.py` now calls the official Ultralytics validation path against
-`dataset.yaml`.
+`datasets/datasets.yaml`.
 
 Edit `model_path`, `data_yaml`, and `split` in `get_map.py`, then run:
 
@@ -107,7 +117,7 @@ python get_map.py
 ```
 
 Use `split="val"` for the validation set, or add a `test:` entry to
-`dataset.yaml` and set `split="test"`.
+`datasets/datasets.yaml` and set `split="test"`.
 
 ## Model Summary
 

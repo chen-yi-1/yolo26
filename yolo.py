@@ -15,7 +15,7 @@ from utils.utils import (cvtColor, get_classes, measure_text, preprocess_input,
 class YOLO(object):
     _defaults = {
         "model_path"        : 'model_data/yolo26x-seg.pt',
-        "classes_path"      : 'dataset.yaml',
+        "classes_path"      : os.path.join('datasets', 'datasets.yaml'),
         "input_shape"       : [640, 640],
         "confidence"        : 0.5,
         "nms_iou"           : 0.3,

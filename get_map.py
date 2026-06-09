@@ -12,14 +12,14 @@ def default_model_path():
     )
     if candidates:
         return candidates[-1]
-    return "model_data/yolo26x-seg.pt"
+    return "model_data/yolo26n-seg.pt"
 
 
 if __name__ == "__main__":
     # Official Ultralytics dataset format:
-    # dataset.yaml -> path, train/val/test image directories, nc, names.
+    # datasets/datasets.yaml -> path, train/val/test image directories, nc, names.
     model_path = default_model_path()
-    data_yaml = "dataset.yaml"
+    data_yaml = os.path.join("datasets", "datasets.yaml")
     input_shape = [640, 640]
     confidence = 0.001
     nms_iou = 0.7

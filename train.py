@@ -8,6 +8,8 @@ from contextlib import contextmanager
 
 import torch
 
+from scripts.prepare_yolo_dataset import prepare_yolo_dataset
+
 
 @contextmanager
 def torch_load_weights_only_false():
@@ -111,7 +113,8 @@ if __name__ == "__main__":
     #   data_yaml        YOLO格式的数据集配置文件路径
     #                    文件中应包含 train/val 路径 和 names 类别名
     #---------------------------------------------------------------------#
-    data_yaml       = 'dataset.yaml'
+    data_yaml       = os.path.join('datasets', 'datasets.yaml')
+    prepare_yolo_dataset(source_dir='dataset', output_dir='datasets', yaml_path=data_yaml)
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
