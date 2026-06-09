@@ -131,7 +131,7 @@ if __name__ == "__main__":
                 capture.release()
                 break
 
-        print("Video Detection Done!")
+        print("Video Segmentation Done!")
         capture.release()
         if video_save_path!="":
             print("Save processed video to the path :" + video_save_path)

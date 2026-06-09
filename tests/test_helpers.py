@@ -67,14 +67,14 @@ class HelperTests(unittest.TestCase):
         from get_map import default_model_path
 
         with patch("glob.glob", return_value=[]):
-            self.assertEqual(default_model_path(), "model_data/yolo26x.pt")
+            self.assertEqual(default_model_path(), "model_data/yolo26x-seg.pt")
 
     def test_default_map_model_path_uses_latest_unfreeze_best(self):
         from get_map import default_model_path
 
         paths = [
-            "runs/detect/logs/a_unfreeze/weights/best.pt",
-            "runs/detect/logs/b_unfreeze/weights/best.pt",
+            "runs/segment/logs/a_unfreeze/weights/best.pt",
+            "runs/segment/logs/b_unfreeze/weights/best.pt",
         ]
         mtimes = {
             paths[0]: 1,

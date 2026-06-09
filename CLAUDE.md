@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-YOLO26 object detection — uses the official `ultralytics.YOLO` training pipeline with a thin configuration wrapper. YOLO format datasets, freeze-thaw training strategy, custom inference with Chinese font support and multiple prediction modes.
+YOLO26 instance segmentation uses the official `ultralytics.YOLO` training pipeline with a thin configuration wrapper. YOLO segmentation-format datasets, freeze-thaw training strategy, custom inference with Chinese font support and multiple prediction modes.
 
 YOLO26 key traits:
 - **NMS-Free**: `end2end=True`, dual head (one2one for inference, one2many for training)
@@ -49,7 +49,7 @@ All training params (optimizer, LR, augmentation, loss gains) are passed directl
 Config section at the top of `if __name__ == "__main__":` uses the same parameter names as the old codebase (`Freeze_Epoch`, `Freeze_Train`, `Freeze_batch_size`, etc.) for familiarity.
 
 **Init_Epoch and resume:** `Init_Epoch > 0` triggers resume mode:
-- Auto-discovers the latest `last.pt` under `runs/detect/{save_dir}/`, validates it has `epoch`/`optimizer` state
+- Auto-discovers the latest `last.pt` under `runs/segment/{save_dir}/`, validates it has `epoch`/`optimizer` state
 - Extracts `train_name` from the checkpoint path so results write back to the same directory
 - `torch_load_weights_only_false()` temporarily patches `torch.load` to force `weights_only=False` during resume operations (required for PyTorch 2.6+ compatibility with ultralytics)
 - When checkpoint epoch ≠ `Init_Epoch`, warns but respects `Init_Epoch` for phase/skip logic; actual resume epoch is determined by the checkpoint
@@ -60,7 +60,7 @@ Config section at the top of `if __name__ == "__main__":` uses the same paramete
 
 ### Inference (`yolo.py`)
 `YOLO` class wraps `ultralytics.YOLO`. Methods:
-- `detect_image(image, crop, count)` — PIL Image → detect → draw boxes with Chinese labels
+- `detect_image(image, crop, count)` — PIL Image → segment → draw masks, contours, boxes, and Chinese labels
 - `get_FPS(image, test_interval)` — FPS benchmark
 - `detect_heatmap(image, save_path)` — class-activation heatmap from `one2one` branch feats
 - `convert_to_onnx(simplify, path)` — ONNX export
@@ -77,7 +77,7 @@ Runs official `ultralytics.YOLO.val()` against `dataset.yaml`. Use `split="val"`
 | `utils/utils.py` | `cvtColor`, `get_classes`, `measure_text`, `seed_everything`, `preprocess_input`, `resize_image`, `show_config` |
 
 ### Gitignored directories
-`model_data/`, `logs/`, `datasets/` — not tracked. Model weights (`yolo26x.pt`) and fonts go in `model_data/`.
+`model_data/`, `logs/`, `datasets/` — not tracked. Segment model weights (`yolo26x-seg.pt`) and fonts go in `model_data/`.
 
 ## Behavioral Guidelines
 

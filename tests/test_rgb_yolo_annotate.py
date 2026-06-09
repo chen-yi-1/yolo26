@@ -1,4 +1,4 @@
-import json
+﻿import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +14,10 @@ from scripts.rgb_yolo_annotate import (
     compute_batch_scores,
     compute_image_stats,
     create_vegetation_mask,
-    convert_yolo_dataset_to_xanylabeling,
-    extract_yolo_bbox,
+    extract_mask_instances,
+    extract_mask_polygon,
+    extract_mask_polygons,
+    fuse_aux_model_with_rgb_mask,
     load_rgb_float,
     percentile_ranks,
 )
@@ -23,7 +25,7 @@ from scripts.rgb_yolo_annotate import (
 
 class RGBYoloAnnotateTests(unittest.TestCase):
     # ------------------------------------------------------------------
-    # Index calculation (same math as rgb_vegetation_metrics)
+    # Index calculation
     # ------------------------------------------------------------------
 
     def test_calculate_indices_known_pixel(self):
@@ -39,42 +41,80 @@ class RGBYoloAnnotateTests(unittest.TestCase):
         self.assertAlmostEqual(float(indices["CIVE"][0, 0]), -0.3599, places=6)
 
     # ------------------------------------------------------------------
-    # Bbox extraction
+    # Mask extraction
     # ------------------------------------------------------------------
 
-    def test_extract_bbox_full_mask(self):
-        mask = np.ones((100, 200), dtype=bool)
-        cx, cy, w, h = extract_yolo_bbox(mask)
-        # Full mask: x1=0, x2=199, y1=0, y2=99
-        # cx = (0+199+1)/2/200 = 0.5, cy = (0+99+1)/2/100 = 0.5
-        self.assertAlmostEqual(cx, 0.5, places=3)
-        self.assertAlmostEqual(cy, 0.5, places=3)
-        self.assertAlmostEqual(w, 1.0, places=3)
-        self.assertAlmostEqual(h, 1.0, places=3)
+    def test_extract_mask_polygon_partial_mask(self):
+        mask = np.zeros((10, 20), dtype=bool)
+        mask[2:6, 4:10] = True
 
-    def test_extract_bbox_partial_mask(self):
-        mask = np.zeros((100, 200), dtype=bool)
-        mask[20:60, 40:120] = True  # rows 20-59, cols 40-119
-        cx, cy, w, h = extract_yolo_bbox(mask)
-        # x1=40, x2=119 → cx=(40+119+1)/2/200=0.4, w=(119-40+1)/200=0.4
-        self.assertAlmostEqual(cx, 0.4, places=3)
-        self.assertAlmostEqual(cy, 0.4, places=3)
-        self.assertAlmostEqual(w, 0.4, places=3)
-        self.assertAlmostEqual(h, 0.4, places=3)
+        polygon = extract_mask_polygon(mask)
 
-    def test_extract_bbox_empty_mask(self):
-        mask = np.zeros((100, 200), dtype=bool)
-        self.assertIsNone(extract_yolo_bbox(mask))
+        self.assertIsNotNone(polygon)
+        self.assertGreaterEqual(len(polygon), 3)
+        xs = [point[0] for point in polygon]
+        ys = [point[1] for point in polygon]
+        self.assertEqual(min(xs), 4.0)
+        self.assertEqual(max(xs), 9.0)
+        self.assertEqual(min(ys), 2.0)
+        self.assertEqual(max(ys), 5.0)
 
-    def test_extract_bbox_single_pixel(self):
-        mask = np.zeros((50, 50), dtype=bool)
-        mask[25, 25] = True
-        cx, cy, w, h = extract_yolo_bbox(mask)
-        # x1=x2=25, cx=(25+25+1)/2/50=0.51, w=1/50=0.02
-        self.assertAlmostEqual(cx, 0.51, places=3)
-        self.assertAlmostEqual(cy, 0.51, places=3)
-        self.assertAlmostEqual(w, 0.02, places=3)
-        self.assertAlmostEqual(h, 0.02, places=3)
+    def test_extract_mask_polygons_multiple_components(self):
+        mask = np.zeros((30, 40), dtype=bool)
+        mask[2:10, 3:12] = True
+        mask[15:25, 20:34] = True
+
+        polygons = extract_mask_polygons(mask, close_kernel_ratio=0.0, open_kernel_ratio=0.0)
+
+        self.assertEqual(len(polygons), 2)
+        self.assertTrue(all(len(polygon) >= 3 for polygon in polygons))
+
+    def test_extract_mask_instances_filters_low_score_components(self):
+        mask = np.zeros((30, 40), dtype=bool)
+        mask[2:10, 3:12] = True
+        mask[15:25, 20:34] = True
+        score = np.zeros((30, 40), dtype=np.float64)
+        score[2:10, 3:12] = 0.08
+        score[15:25, 20:34] = 0.22
+
+        instances = extract_mask_instances(
+            mask,
+            score_map=score,
+            min_component_score=0.13,
+            close_kernel_ratio=0.0,
+            open_kernel_ratio=0.0,
+            max_instances=0,
+        )
+
+        self.assertEqual(len(instances), 1)
+        ys, xs = np.where(instances[0]["mask"])
+        self.assertGreaterEqual(xs.min(), 20)
+
+    def test_aux_model_fusion_uses_intersection_not_raw_model_mask(self):
+        rgb_mask = np.zeros((30, 40), dtype=bool)
+        rgb_mask[8:18, 12:25] = True
+        model_mask = np.zeros((30, 40), dtype=bool)
+        model_mask[2:25, 4:35] = True
+        score = np.zeros((30, 40), dtype=np.float64)
+        score[rgb_mask] = 0.25
+
+        instances, accepted_union = fuse_aux_model_with_rgb_mask(
+            [{"mask": model_mask, "model_confidence": 0.9}],
+            rgb_mask,
+            score_map=score,
+            min_overlap_ratio=0.01,
+            min_component_score=0.12,
+            close_kernel_ratio=0.0,
+            open_kernel_ratio=0.0,
+            min_area_ratio=0.001,
+            max_instances=0,
+        )
+
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(instances[0]["source"], "fused_model_rgb")
+        self.assertEqual(int(np.sum(instances[0]["mask"])), int(np.sum(rgb_mask)))
+        self.assertLess(int(np.sum(instances[0]["mask"])), int(np.sum(model_mask)))
+        self.assertEqual(int(np.sum(accepted_union)), int(np.sum(rgb_mask)))
 
     # ------------------------------------------------------------------
     # Per-image statistics
@@ -167,11 +207,11 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                             f"Extremes should get different classes, got {worst_class} for both")
         # All class_ids should be valid
         for cid in classes:
-            self.assertIn(cid, range(3),
+            self.assertIn(cid, range(2),
                           f"Invalid class_id {cid}; {dict(enumerate(classes))}")
 
-    def test_classify_middle_is_subhealthy(self):
-        """Middle-of-batch records → subhealthy."""
+    def test_classify_middle_is_abnormal(self):
+        """Middle-of-batch records are abnormal."""
         records = [
             self._make_record(-0.05, -0.2, -0.1, -0.1, -0.15, 0.4)
             for _ in range(3)
@@ -187,21 +227,21 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             classify_record(rec)
 
         classes = [r["class_id"] for r in records]
-        # Middle group should be subhealthy
+        # Middle group should be abnormal.
         middle_classes = classes[3:7]
         self.assertTrue(
             all(c == 1 for c in middle_classes),
-            f"Middle group should all be subhealthy (1), got {middle_classes}",
+            f"Middle group should all be abnormal (1), got {middle_classes}",
         )
 
     def test_classify_zero_coverage_is_dead(self):
-        """No vegetation pixels → dead_rotten regardless of other scores."""
+        """No vegetation pixels 鈫?dead_rotten regardless of other scores."""
         rec = self._make_record(coverage=0.0, exg_mean=0.0, gli_mean=0.0, ngrdi_mean=0.0, vari_mean=0.0, exr_mean=0.0)
         rec["green_score"] = 0.9
         rec["coverage_rank"] = 0.9
         rec["red_rank"] = 0.1
         classify_record(rec)
-        self.assertEqual(rec["class_id"], 2)  # unhealthy
+        self.assertEqual(rec["class_id"], 1)  # abnormal
 
     # ------------------------------------------------------------------
     # End-to-end pipeline
@@ -224,8 +264,8 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             Image.new("RGB", (200, 200), (200, 180, 30)).save(input_dir / "wilted_01.jpg")
             # Overgrown: large green area
             Image.new("RGB", (200, 200), (20, 150, 35)).save(input_dir / "overgrown_01.jpg")
-            # Subhealthy: pale green
-            Image.new("RGB", (200, 200), (140, 170, 100)).save(input_dir / "subhealthy_01.jpg")
+            # Abnormal: pale green
+            Image.new("RGB", (200, 200), (140, 170, 100)).save(input_dir / "abnormal_01.jpg")
 
             records = annotate(
                 input_dir=input_dir,
@@ -247,10 +287,10 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertFalse((output_dir / "labels").exists())
             self.assertEqual(
                 (output_dir / "classes.txt").read_text(encoding="utf-8"),
-                "healthy\nsubhealthy\nunhealthy\n",
+                "healthy\nabnormal\n",
             )
 
-            # Train/val split: 0.8 × 5 = 4 train, 1 val
+            # Train/val split: 0.8 脳 5 = 4 train, 1 val
             train_images = list((output_dir / "train").glob("*.jpg"))
             val_images = list((output_dir / "val").glob("*.jpg"))
             self.assertEqual(len(train_images), 4)
@@ -284,6 +324,36 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             val_images = list((output_dir / "val").glob("*.jpg"))
             self.assertEqual(len(train_images), 0)
             self.assertEqual(len(val_images), 1)
+
+    def test_annotate_writes_multiple_instance_polygons(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_dir = tmpdir / "raw_datas"
+            output_dir = tmpdir / "datas"
+            input_dir.mkdir()
+
+            image = np.zeros((100, 120, 3), dtype=np.uint8)
+            image[:] = (60, 35, 20)
+            image[10:35, 10:40] = (30, 180, 40)
+            image[55:90, 70:110] = (30, 180, 40)
+            Image.fromarray(image, "RGB").save(input_dir / "multi.jpg")
+
+            annotate(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                train_ratio=0.0,
+                exg_threshold=0.1,
+                close_kernel_ratio=0.0,
+                open_kernel_ratio=0.0,
+                min_area_ratio=0.001,
+                max_instances=0,
+                seed=42,
+            )
+
+            data = json.loads((output_dir / "val" / "multi.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(data["shapes"]), 2)
+            self.assertTrue(all(shape["shape_type"] == "polygon" for shape in data["shapes"]))
+            self.assertTrue(all(shape["label"] in CLASS_NAMES.values() for shape in data["shapes"]))
 
     def test_annotate_xanylabeling_output(self):
         """X-AnyLabeling mode writes image/json pairs under train and val."""
@@ -326,59 +396,36 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertEqual(len(data["shapes"]), 1)
             shape = data["shapes"][0]
             self.assertIn(shape["label"], CLASS_NAMES.values())
-            self.assertEqual(shape["shape_type"], "rectangle")
-            self.assertEqual(len(shape["points"]), 4)
-
-    def test_convert_yolo_dataset_to_xanylabeling(self):
-        """Existing YOLO dataset is converted to split image/json pairs."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            yolo_dir = tmpdir / "dataset"
-            output_dir = tmpdir / "dataset_xany"
-            (yolo_dir / "images" / "train").mkdir(parents=True)
-            (yolo_dir / "labels" / "train").mkdir(parents=True)
-            (yolo_dir / "images" / "val").mkdir(parents=True)
-            (yolo_dir / "labels" / "val").mkdir(parents=True)
-
-            Image.new("RGB", (100, 80), (30, 180, 40)).save(yolo_dir / "images" / "train" / "plant.jpg")
-            (yolo_dir / "labels" / "train" / "plant.txt").write_text(
-                "1 0.500000 0.500000 0.400000 0.250000\n",
-                encoding="utf-8",
-            )
-            Image.new("RGB", (50, 40), (80, 40, 20)).save(yolo_dir / "images" / "val" / "empty.jpg")
-            (yolo_dir / "labels" / "val" / "empty.txt").write_text("", encoding="utf-8")
-            (yolo_dir / "classes.txt").write_text("healthy\nsubhealthy\nunhealthy\n", encoding="utf-8")
-
-            records = convert_yolo_dataset_to_xanylabeling(yolo_dir, output_dir)
-
-            self.assertEqual(len(records), 2)
-            self.assertTrue((output_dir / "train" / "plant.jpg").exists())
-            self.assertTrue((output_dir / "train" / "plant.json").exists())
-            self.assertTrue((output_dir / "val" / "empty.jpg").exists())
-            self.assertTrue((output_dir / "val" / "empty.json").exists())
-            self.assertEqual(
-                (output_dir / "classes.txt").read_text(encoding="utf-8"),
-                "healthy\nsubhealthy\nunhealthy\n",
-            )
-
-            plant = json.loads((output_dir / "train" / "plant.json").read_text(encoding="utf-8"))
-            self.assertEqual(plant["imagePath"], "plant.jpg")
-            self.assertEqual(plant["imageWidth"], 100)
-            self.assertEqual(plant["imageHeight"], 80)
-            self.assertEqual(plant["shapes"][0]["label"], "subhealthy")
-            self.assertEqual(
-                plant["shapes"][0]["points"],
-                [[30.0, 30.0], [70.0, 30.0], [70.0, 50.0], [30.0, 50.0]],
-            )
-
-            empty = json.loads((output_dir / "val" / "empty.json").read_text(encoding="utf-8"))
-            self.assertEqual(empty["shapes"], [])
+            self.assertEqual(shape["shape_type"], "polygon")
+            self.assertGreaterEqual(len(shape["points"]), 3)
 
     def test_annotate_missing_input_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(FileNotFoundError):
                 annotate(input_dir=Path(tmpdir) / "nonexistent", output_dir=Path(tmpdir) / "out")
 
+    def test_annotate_can_disable_aux_model(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_dir = tmpdir / "raw_datas"
+            output_dir = tmpdir / "dataset"
+            input_dir.mkdir()
+
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(input_dir / "healthy_01.jpg")
+
+            records = annotate(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                aux_model_path=tmpdir / "missing-seg.pt",
+                use_aux_model=False,
+                train_ratio=0.0,
+                seed=1,
+            )
+
+            self.assertEqual(len(records), 1)
+            self.assertTrue((output_dir / "classes.txt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
+

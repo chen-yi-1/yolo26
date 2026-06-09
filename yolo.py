@@ -14,11 +14,12 @@ from utils.utils import (cvtColor, get_classes, measure_text, preprocess_input,
 
 class YOLO(object):
     _defaults = {
-        "model_path"        : 'model_data/yolo26x.pt',
+        "model_path"        : 'model_data/yolo26x-seg.pt',
         "classes_path"      : 'dataset.yaml',
         "input_shape"       : [640, 640],
         "confidence"        : 0.5,
         "nms_iou"           : 0.3,
+        "mask_alpha"        : 0.35,
         "letterbox_image"   : True,
         "cuda"              : True,
     }
@@ -77,11 +78,19 @@ class YOLO(object):
         boxes_xyxy = result.boxes.xyxy.cpu().numpy()
         confs = result.boxes.conf.cpu().numpy()
         labels = result.boxes.cls.cpu().numpy().astype(np.int32)
+        masks_xy = result.masks.xy if result.masks is not None else []
 
         # Scale boxes back to original coordinates for direct-resize mode
         if not self.letterbox_image:
             boxes_xyxy[:, [0, 2]] *= orig_w / self.input_shape[1]
             boxes_xyxy[:, [1, 3]] *= orig_h / self.input_shape[0]
+            scaled_masks_xy = []
+            for polygon in masks_xy:
+                polygon = np.asarray(polygon, dtype=np.float32).copy()
+                polygon[:, 0] *= orig_w / self.input_shape[1]
+                polygon[:, 1] *= orig_h / self.input_shape[0]
+                scaled_masks_xy.append(polygon)
+            masks_xy = scaled_masks_xy
 
         font = ImageFont.truetype(
             font='model_data/simhei.ttf',
@@ -114,8 +123,29 @@ class YOLO(object):
                 crop_image.save(os.path.join(dir_save_path, f"crop_{i}.png"), quality=95, subsampling=0)
                 print(f"save crop_{i}.png to {dir_save_path}")
 
+        if masks_xy:
+            mask_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            mask_draw = ImageDraw.Draw(mask_layer)
+            for i, polygon in enumerate(masks_xy):
+                if polygon is None or len(polygon) < 3:
+                    continue
+                c = int(labels[i])
+                color = self.colors[c]
+                points = [
+                    (
+                        int(np.clip(x, 0, image.size[0] - 1)),
+                        int(np.clip(y, 0, image.size[1] - 1)),
+                    )
+                    for x, y in polygon
+                ]
+                fill = (*color, int(255 * self.mask_alpha))
+                mask_draw.polygon(points, fill=fill)
+                mask_draw.line(points + [points[0]], fill=(*color, 255), width=max(1, thickness))
+            image = Image.alpha_composite(image.convert("RGBA"), mask_layer).convert("RGB")
+
         draw = ImageDraw.Draw(image)
         for i, c in enumerate(labels):
+            c = int(c)
             predicted_class = self.class_names[int(c)]
             box = boxes_xyxy[i]
             score = confs[i]

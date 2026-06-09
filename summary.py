@@ -10,11 +10,11 @@ if __name__ == "__main__":
     num_classes     = 80
     phi             = 's'
 
-    model_path = f'yolo26{phi}.pt'
+    model_path = f'yolo26{phi}-seg.pt'
     model = YOLO(model_path)
 
     # Print ultralytics model summary
-    print(f"\nYOLO26{phi} summary ({num_classes} classes):")
+    print(f"\nYOLO26{phi}-seg summary ({num_classes} classes):")
     print(model.info())
 
     # Detailed FLOPs & params via thop

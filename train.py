@@ -67,9 +67,9 @@ def _setup_callbacks(model, save_phase_ckpt=False):
 
 2、损失值的大小用于判断是否收敛，比较重要的是有收敛的趋势，即验证集损失不断下降，如果验证集损失基本上不改变的话，模型基本上就收敛了。
    损失值的具体大小并没有什么意义，大和小只在于损失的计算方式，并不是接近于0才好。如果想要让损失好看点，可以直接到对应的损失函数里面除上10000。
-   训练过程中的损失值会保存在 runs/detect/logs/ 下
+   训练过程中的损失值会保存在 runs/segment/logs/ 下
 
-3、训练好的权值文件保存在 runs/detect/logs/ 中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
+3、训练好的权值文件保存在 runs/segment/logs/ 中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
    如果只是训练了几个Step是不会保存的，Epoch和Step的概念要捋清楚一下。
 '''
 if __name__ == "__main__":
@@ -95,9 +95,9 @@ if __name__ == "__main__":
     #   模型的 预训练权重 比较重要的部分是 主干特征提取网络的权值部分，用于进行特征提取。
     #   预训练权重对于99%的情况都必须要用，不用的话主干部分的权值太过随机，特征提取效果不明显，网络训练的结果也不会好
     #
-    #   如果训练过程中存在中断训练的操作，可以在断点续训时将model_path设置成runs/detect/logs/下的last.pt权值文件。
+    #   如果训练过程中存在中断训练的操作，可以在断点续训时将model_path设置成runs/segment/logs/下的last.pt权值文件。
     #
-    #   YOLO26 预训练权重路径（支持自动下载：yolo26n.pt / yolo26s.pt / yolo26m.pt / yolo26l.pt / yolo26x.pt）
+    #   YOLO26 Segment 预训练权重路径（支持自动下载：yolo26n-seg.pt / yolo26s-seg.pt / yolo26m-seg.pt / yolo26l-seg.pt / yolo26x-seg.pt）
     #   如果想要让模型从0开始训练，则设置model_path = 'yolo26x.yaml'，下面的Freeze_Train = False，此时从零开始训练，且没有冻结主干的过程。
     #
     #   一般来讲，网络从0开始的训练效果会很差，因为权值太过随机，特征提取效果不明显，因此非常、非常、非常不建议大家从0开始训练！
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolo26n.pt'
+    model_path      = 'model_data/yolo26n-seg.pt'
     #---------------------------------------------------------------------#
     #   data_yaml        YOLO格式的数据集配置文件路径
     #                    文件中应包含 train/val 路径 和 names 类别名
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     #------------------------------------------------------------------#
     save_period         = 10
     #------------------------------------------------------------------#
-    #   save_dir        训练输出的 project 名称（ultralytics 实际路径为 runs/detect/{save_dir}/{train_name}/）
+    #   save_dir        训练输出的 project 名称（ultralytics 实际路径为 runs/segment/{save_dir}/{train_name}/）
     #------------------------------------------------------------------#
     save_dir            = 'logs'
     #------------------------------------------------------------------#
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     #   断点续训：Init_Epoch > 0 时自动发现最新 checkpoint
     #------------------------------------------------------#
     if Init_Epoch > 0:
-        base_dir = os.path.join('runs', 'detect', save_dir)
+        base_dir = os.path.join('runs', 'segment', save_dir)
         ckpt_paths = []
         if os.path.isdir(base_dir):
             ckpt_paths = sorted(
@@ -284,7 +284,7 @@ if __name__ == "__main__":
         train_name = os.path.basename(os.path.dirname(os.path.dirname(model_path)))
         print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
         print(f"  {model_path}")
-        print(f"  Results will be saved to: runs/detect/{save_dir}/{train_name}/")
+        print(f"  Results will be saved to: runs/segment/{save_dir}/{train_name}/")
 
     freeze_train_name, unfreeze_train_name = phase_train_names(train_name, Init_Epoch > 0)
 
@@ -348,7 +348,7 @@ if __name__ == "__main__":
         dfl=1.5,
         amp=fp16,
         seed=seed,
-        project=save_dir,
+        project=os.path.join('runs', 'segment', save_dir),
         exist_ok=True,
         save_period=save_period,
         val=eval_flag,

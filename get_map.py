@@ -7,12 +7,12 @@ from ultralytics import YOLO
 
 def default_model_path():
     candidates = sorted(
-        glob.glob("runs/detect/logs/*_unfreeze/weights/best.pt"),
+        glob.glob("runs/segment/logs/*_unfreeze/weights/best.pt"),
         key=os.path.getmtime,
     )
     if candidates:
         return candidates[-1]
-    return "model_data/yolo26x.pt"
+    return "model_data/yolo26x-seg.pt"
 
 
 if __name__ == "__main__":
@@ -40,3 +40,6 @@ if __name__ == "__main__":
     print("Validation metrics:")
     for key, value in metrics.results_dict.items():
         print(f"{key}: {value:.6f}")
+    if hasattr(metrics, "seg"):
+        print(f"mask mAP50-95: {metrics.seg.map:.6f}")
+        print(f"mask mAP50: {metrics.seg.map50:.6f}")

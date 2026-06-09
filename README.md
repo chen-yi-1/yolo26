@@ -1,6 +1,6 @@
-# YOLO26 Object Detection
+# YOLO26 Instance Segmentation
 
-YOLO26 object detection project using the official `ultralytics.YOLO` training,
+YOLO26 instance segmentation project using the official `ultralytics.YOLO` training,
 prediction, validation, and export pipeline.
 
 ## Environment
@@ -12,8 +12,8 @@ pip install -r requirements.txt
 Model weights and fonts are expected under `model_data/`, for example:
 
 ```text
-model_data/yolo26n.pt
-model_data/yolo26x.pt
+model_data/yolo26n-seg.pt
+model_data/yolo26x-seg.pt
 model_data/simhei.ttf
 ```
 
@@ -32,10 +32,10 @@ datasets/
 dataset.yaml
 ```
 
-Each label file uses normalized YOLO boxes:
+Each label file should use normalized YOLO segmentation polygons:
 
 ```text
-class_id x_center y_center width height
+class_id x1 y1 x2 y2 x3 y3 ...
 ```
 
 Example `dataset.yaml`:
@@ -47,7 +47,7 @@ val: images/val
 nc: 2
 names:
   0: healthy
-  1: unhealthy
+  1: abnormal
 ```
 
 Prepare data directly in the Ultralytics format above.
@@ -60,13 +60,13 @@ Edit the config section in `train.py`, then run:
 python train.py
 ```
 
-Training uses a two-phase freeze/unfreeze strategy:
+Training uses a two-phase freeze/unfreeze strategy with YOLO26 `-seg` weights:
 
-- Freeze phase writes to `runs/detect/logs/<train_name>_freeze/`
-- Unfreeze phase writes to `runs/detect/logs/<train_name>_unfreeze/`
+- Freeze phase writes to `runs/segment/logs/<train_name>_freeze/`
+- Unfreeze phase writes to `runs/segment/logs/<train_name>_unfreeze/`
 
 For resume training, set `Init_Epoch > 0`. The script discovers the latest
-`last.pt` under `runs/detect/logs/` and resumes into that checkpoint's existing
+`last.pt` under `runs/segment/logs/` and resumes into that checkpoint's existing
 run directory.
 
 ## Predict
@@ -74,9 +74,11 @@ run directory.
 Edit `yolo.py` defaults if needed:
 
 ```python
-"model_path": "model_data/yolo26x.pt"
+"model_path": "model_data/yolo26x-seg.pt"
 "classes_path": "dataset.yaml"
 ```
+
+Prediction overlays instance masks, mask contours, boxes, class names, and confidence scores.
 
 Run:
 
