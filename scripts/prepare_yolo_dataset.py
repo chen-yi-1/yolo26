@@ -330,7 +330,7 @@ def parse_args():
     parser.add_argument(
         "--task",
         choices=["segment", "detect"],
-        default="segment",
+        default="detect",
         help="YOLO task label format to prepare: segment polygons (default) or detect boxes.",
     )
     return parser.parse_args()

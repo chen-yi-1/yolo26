@@ -32,11 +32,6 @@ from tqdm import tqdm
 EPSILON = 1e-6
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-CLASS_NAMES = {
-    0: "healthy",
-    1: "abnormal",
-}
-
 # Pixel-mask cleanup defaults for auto-generated segmentation labels.
 DEFAULT_MIN_COMPONENT_EXG_MEAN = 0.12
 DEFAULT_MAX_INSTANCES = 12
@@ -486,12 +481,42 @@ def extract_mask_instances(
 def discover_images(input_dir, recursive):
     """Yield Path objects for all image files under input_dir."""
     input_dir = Path(input_dir)
-    pattern = "**/*" if recursive else "*"
+    pattern = "**/*" if recursive else "*/*"
     paths = []
     for p in sorted(input_dir.glob(pattern)):
         if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
             paths.append(p)
     return paths
+
+
+def discover_class_dirs(input_dir):
+    """Return first-level input subdirectories used as class names."""
+    input_dir = Path(input_dir)
+    return [p for p in sorted(input_dir.iterdir()) if p.is_dir()]
+
+
+def class_names_from_input_dirs(input_dir):
+    """Build class id -> class name mapping from first-level input folders."""
+    class_dirs = discover_class_dirs(input_dir)
+    if not class_dirs:
+        raise ValueError(f"No class folders found in {input_dir}")
+    return {idx: path.name for idx, path in enumerate(class_dirs)}
+
+
+def class_id_for_image(image_path, input_dir, class_names):
+    """Return class id from image's first-level folder under input_dir."""
+    try:
+        rel_parts = Path(image_path).relative_to(input_dir).parts
+    except ValueError:
+        return 0
+    if len(rel_parts) < 2:
+        return 0
+
+    folder_name = rel_parts[0]
+    for cid, name in class_names.items():
+        if name == folder_name:
+            return cid
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +547,7 @@ def build_xanylabeling_data(image_name, image_width, image_height, shapes):
     }
 
 
-def build_xanylabeling_json(rec, image_name):
+def build_xanylabeling_json(rec, image_name, class_names):
     """Build an X-AnyLabeling/Labelme-style JSON annotation dict."""
     shapes = []
     for instance in rec["instances"]:
@@ -532,7 +557,7 @@ def build_xanylabeling_json(rec, image_name):
         ):
             shapes.append(
                 {
-                    "label": CLASS_NAMES[instance["class_id"]],
+                    "label": class_names[instance["class_id"]],
                     "score": instance["confidence"],
                     "points": points,
                     "group_id": None,
@@ -548,10 +573,10 @@ def build_xanylabeling_json(rec, image_name):
     return build_xanylabeling_data(image_name, rec["image_width"], rec["image_height"], shapes)
 
 
-def write_xanylabeling_json(json_path, rec, image_name):
+def write_xanylabeling_json(json_path, rec, image_name, class_names):
     """Write an X-AnyLabeling JSON file beside its image."""
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    data = build_xanylabeling_json(rec, image_name)
+    data = build_xanylabeling_json(rec, image_name, class_names)
     json_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -602,9 +627,9 @@ def _analyze_image(task):
                 "polygon": extracted["polygon"],
                 "rectangle": extracted["rectangle"],
                 "area": extracted["area"],
-                "class_id": 0,
+                "class_id": params["class_id"],
                 "confidence": 1.0,
-                "description": "auto-labeled healthy; review manually",
+                "description": f"auto-labeled {params['class_name']}; review manually",
             }
         )
 
@@ -675,6 +700,7 @@ def annotate(
         raise ValueError(f"workers must be >= 1, got: {workers}")
 
     # ---- 1. Discover images ----
+    class_names = class_names_from_input_dirs(input_dir)
     image_paths = discover_images(input_dir, recursive)
     if not image_paths:
         raise ValueError(f"No images found in {input_dir}")
@@ -696,7 +722,13 @@ def annotate(
         "max_polygon_points": max_polygon_points,
         "max_instances": max_instances,
     }
-    tasks = [(img_path, analysis_params) for img_path in image_paths]
+    tasks = []
+    for img_path in image_paths:
+        class_id = class_id_for_image(img_path, input_dir, class_names)
+        params = dict(analysis_params)
+        params["class_id"] = class_id
+        params["class_name"] = class_names[class_id]
+        tasks.append((img_path, params))
     if workers == 1:
         results = [_analyze_image(task) for task in tqdm(tasks, desc="Analyzing images", unit="image")]
     else:
@@ -754,7 +786,7 @@ def annotate(
             continue
 
         # Write label
-        write_xanylabeling_json(label_dst, rec, img_dst.name)
+        write_xanylabeling_json(label_dst, rec, img_dst.name, class_names)
         if not rec["instances"]:
             no_polygon_count += 1
 
@@ -764,7 +796,7 @@ def annotate(
             val_count += 1
 
     # ---- 5. Generate classes.txt ----
-    write_classes_txt(output_dir, CLASS_NAMES)
+    write_classes_txt(output_dir, class_names)
 
     # ---- 6. Summary ----
     print(f"\nDone: {train_count} train + {val_count} val images -> {output_dir}")
@@ -781,7 +813,7 @@ def annotate(
     print("\nClass distribution:")
     if class_counts:
         for cid in sorted(class_counts.keys()):
-            name = CLASS_NAMES.get(cid, f"class_{cid}")
+            name = class_names.get(cid, f"class_{cid}")
             print(f"  {cid} ({name}): {class_counts[cid]}")
     else:
         print("  no instances")

@@ -92,21 +92,22 @@ class RGBYoloAnnotateTests(unittest.TestCase):
         """Full pipeline with synthetic seedling images."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_dir = tmpdir / "raw_datas"
+            input_dir = tmpdir / "raw_data"
             output_dir = tmpdir / "datas"
-            input_dir.mkdir()
+            class_dir = input_dir / "healthy"
+            class_dir.mkdir(parents=True)
 
             # Create 5 synthetic images simulating different seedling conditions
             # Healthy: bright green
-            Image.new("RGB", (200, 200), (30, 180, 40)).save(input_dir / "healthy_01.jpg")
+            Image.new("RGB", (200, 200), (30, 180, 40)).save(class_dir / "healthy_01.jpg")
             # Dead: brown/black
-            Image.new("RGB", (200, 200), (80, 40, 20)).save(input_dir / "dead_01.jpg")
+            Image.new("RGB", (200, 200), (80, 40, 20)).save(class_dir / "dead_01.jpg")
             # Wilted: yellowish
-            Image.new("RGB", (200, 200), (200, 180, 30)).save(input_dir / "wilted_01.jpg")
+            Image.new("RGB", (200, 200), (200, 180, 30)).save(class_dir / "wilted_01.jpg")
             # Overgrown: large green area
-            Image.new("RGB", (200, 200), (20, 150, 35)).save(input_dir / "overgrown_01.jpg")
+            Image.new("RGB", (200, 200), (20, 150, 35)).save(class_dir / "overgrown_01.jpg")
             # Abnormal: pale green
-            Image.new("RGB", (200, 200), (140, 170, 100)).save(input_dir / "abnormal_01.jpg")
+            Image.new("RGB", (200, 200), (140, 170, 100)).save(class_dir / "abnormal_01.jpg")
 
             records = annotate(
                 input_dir=input_dir,
@@ -127,7 +128,7 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertFalse((output_dir / "labels").exists())
             self.assertEqual(
                 (output_dir / "classes.txt").read_text(encoding="utf-8"),
-                "healthy\nabnormal\n",
+                "healthy\n",
             )
 
             # Train/val split: 0.8 脳 5 = 4 train, 1 val
@@ -150,14 +151,44 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                 self.assertIn("shapes", data)
                 self.assertTrue(all(shape["label"] == "healthy" for shape in data["shapes"]))
 
+    def test_annotate_uses_input_folder_names_as_classes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_dir = tmpdir / "raw_data"
+            output_dir = tmpdir / "datas"
+            (input_dir / "abnormal").mkdir(parents=True)
+            (input_dir / "healthy").mkdir()
+
+            Image.new("RGB", (100, 100), (30, 180, 40)).save(input_dir / "abnormal" / "abnormal_01.jpg")
+            Image.new("RGB", (100, 100), (30, 180, 40)).save(input_dir / "healthy" / "healthy_01.jpg")
+
+            annotate(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                train_ratio=1.0,
+                exg_threshold=0.1,
+                seed=42,
+            )
+
+            self.assertEqual(
+                (output_dir / "classes.txt").read_text(encoding="utf-8"),
+                "abnormal\nhealthy\n",
+            )
+
+            abnormal_data = json.loads((output_dir / "train" / "abnormal_01.json").read_text(encoding="utf-8"))
+            healthy_data = json.loads((output_dir / "train" / "healthy_01.json").read_text(encoding="utf-8"))
+            self.assertTrue(all(shape["label"] == "abnormal" for shape in abnormal_data["shapes"]))
+            self.assertTrue(all(shape["label"] == "healthy" for shape in healthy_data["shapes"]))
+
     def test_annotate_all_val_when_train_ratio_zero(self):
         """Edge case: train_ratio=0 puts everything in val."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_dir = tmpdir / "raw_datas"
+            input_dir = tmpdir / "raw_data"
             output_dir = tmpdir / "datas"
-            input_dir.mkdir()
-            Image.new("RGB", (100, 100), (30, 180, 40)).save(input_dir / "img.jpg")
+            class_dir = input_dir / "healthy"
+            class_dir.mkdir(parents=True)
+            Image.new("RGB", (100, 100), (30, 180, 40)).save(class_dir / "img.jpg")
 
             records = annotate(input_dir=input_dir, output_dir=output_dir, train_ratio=0.0, seed=42)
 
@@ -169,12 +200,13 @@ class RGBYoloAnnotateTests(unittest.TestCase):
     def test_annotate_with_multiple_workers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_dir = tmpdir / "raw_datas"
+            input_dir = tmpdir / "raw_data"
             output_dir = tmpdir / "datas"
-            input_dir.mkdir()
+            class_dir = input_dir / "healthy"
+            class_dir.mkdir(parents=True)
 
             for idx in range(3):
-                Image.new("RGB", (80, 80), (30, 180, 40)).save(input_dir / f"plant_{idx}.png")
+                Image.new("RGB", (80, 80), (30, 180, 40)).save(class_dir / f"plant_{idx}.png")
 
             records = annotate(
                 input_dir=input_dir,
@@ -191,15 +223,16 @@ class RGBYoloAnnotateTests(unittest.TestCase):
     def test_annotate_writes_multiple_instance_polygons(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_dir = tmpdir / "raw_datas"
+            input_dir = tmpdir / "raw_data"
             output_dir = tmpdir / "datas"
-            input_dir.mkdir()
+            class_dir = input_dir / "healthy"
+            class_dir.mkdir(parents=True)
 
             image = np.zeros((100, 120, 3), dtype=np.uint8)
             image[:] = (60, 35, 20)
             image[10:35, 10:40] = (30, 180, 40)
             image[55:90, 70:110] = (30, 180, 40)
-            Image.fromarray(image, "RGB").save(input_dir / "multi.jpg")
+            Image.fromarray(image, "RGB").save(class_dir / "multi.jpg")
 
             annotate(
                 input_dir=input_dir,
@@ -225,12 +258,13 @@ class RGBYoloAnnotateTests(unittest.TestCase):
         """X-AnyLabeling mode writes image/json pairs under train and val."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_dir = tmpdir / "raw_datas"
+            input_dir = tmpdir / "raw_data"
             output_dir = tmpdir / "dataset"
-            input_dir.mkdir()
+            class_dir = input_dir / "healthy"
+            class_dir.mkdir(parents=True)
 
-            Image.new("RGB", (100, 80), (30, 180, 40)).save(input_dir / "healthy_01.jpg")
-            Image.new("RGB", (100, 80), (80, 40, 20)).save(input_dir / "dead_01.jpg")
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(class_dir / "healthy_01.jpg")
+            Image.new("RGB", (100, 80), (80, 40, 20)).save(class_dir / "dead_01.jpg")
 
             records = annotate(
                 input_dir=input_dir,
@@ -272,6 +306,16 @@ class RGBYoloAnnotateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(FileNotFoundError):
                 annotate(input_dir=Path(tmpdir) / "nonexistent", output_dir=Path(tmpdir) / "out")
+
+    def test_annotate_without_class_folders_raises(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_dir = tmpdir / "raw_data"
+            input_dir.mkdir()
+            Image.new("RGB", (100, 100), (30, 180, 40)).save(input_dir / "img.jpg")
+
+            with self.assertRaisesRegex(ValueError, "No class folders found"):
+                annotate(input_dir=input_dir, output_dir=tmpdir / "out")
 
 
 if __name__ == "__main__":

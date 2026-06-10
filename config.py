@@ -3,7 +3,7 @@
 import os
 
 
-TASK = "segment"  # "segment" or "detect"
+TASK = "detect"  # "segment" or "detect"
 
 DATA = {
     "source": "dataset",
