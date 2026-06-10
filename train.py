@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 import torch
 
-from project_config import DATA, TASK, TRAIN, get_model_path, get_run_task
+from config import DATA, TASK, TRAIN, get_model_path, get_run_task
 from scripts.prepare_yolo_dataset import prepare_yolo_dataset
 
 

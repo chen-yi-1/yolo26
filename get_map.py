@@ -4,7 +4,7 @@ import os
 import torch
 from ultralytics import YOLO
 
-from project_config import DATA, TASK, VAL, get_model_path, get_run_task
+from config import DATA, TASK, VAL, get_model_path, get_run_task
 
 
 def default_model_path(task="segment"):

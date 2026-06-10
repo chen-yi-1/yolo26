@@ -1,7 +1,7 @@
 # YOLO26 Instance Segmentation / Object Detection
 
 YOLO26 project using the official `ultralytics.YOLO` training, prediction,
-validation, and export pipeline. Set `TASK` in `project_config.py` to choose:
+validation, and export pipeline. Set `TASK` in `config.py` to choose:
 
 - `segment`: instance segmentation with polygon labels
 - `detect`: object detection with rectangle/bbox labels
@@ -25,7 +25,7 @@ model_data/simhei.ttf
 Training, validation, and inference defaults are centralized in:
 
 ```text
-project_config.py
+config.py
 ```
 
 For object detection, change:
@@ -118,7 +118,7 @@ run directory.
 
 ## Predict
 
-Edit inference defaults in `project_config.py` under `INFER`.
+Edit inference defaults in `config.py` under `INFER`.
 
 Prediction overlays boxes, class names, and confidence scores. Segmentation
 models also overlay instance masks and mask contours.

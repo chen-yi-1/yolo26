@@ -8,7 +8,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO as UltralyticsYOLO
 
-from project_config import INFER, TASK, get_infer_model_path
+from config import INFER, TASK, get_infer_model_path
 from utils.utils import (cvtColor, get_classes, measure_text, preprocess_input,
                          resize_image, show_config)
 
