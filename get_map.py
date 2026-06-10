@@ -4,26 +4,31 @@ import os
 import torch
 from ultralytics import YOLO
 
+from project_config import DATA, TASK, VAL, get_model_path, get_run_task
 
-def default_model_path():
+
+def default_model_path(task="segment"):
+    run_task = get_run_task(task)
+    fallback = get_model_path(task)
     candidates = sorted(
-        glob.glob("runs/segment/logs/*_unfreeze/weights/best.pt"),
+        glob.glob(f"runs/{run_task}/logs/*_unfreeze/weights/best.pt"),
         key=os.path.getmtime,
     )
     if candidates:
         return candidates[-1]
-    return "model_data/yolo26n-seg.pt"
+    return fallback
 
 
 if __name__ == "__main__":
     # Official Ultralytics dataset format:
     # datasets/datasets.yaml -> path, train/val/test image directories, nc, names.
-    model_path = default_model_path()
-    data_yaml = os.path.join("datasets", "datasets.yaml")
-    input_shape = [640, 640]
-    confidence = 0.001
-    nms_iou = 0.7
-    split = "val"
+    task = TASK
+    model_path = default_model_path(task)
+    data_yaml = DATA["yaml"]
+    input_shape = VAL["input_shape"]
+    confidence = VAL["confidence"]
+    nms_iou = VAL["nms_iou"]
+    split = VAL["split"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = YOLO(model_path)
@@ -43,3 +48,6 @@ if __name__ == "__main__":
     if hasattr(metrics, "seg"):
         print(f"mask mAP50-95: {metrics.seg.map:.6f}")
         print(f"mask mAP50: {metrics.seg.map50:.6f}")
+    if hasattr(metrics, "box"):
+        print(f"box mAP50-95: {metrics.box.map:.6f}")
+        print(f"box mAP50: {metrics.box.map50:.6f}")

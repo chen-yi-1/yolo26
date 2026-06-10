@@ -114,7 +114,6 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                 train_ratio=0.8,
                 exg_threshold=0.1,
                 seed=42,
-                copy_mode="copy",
             )
 
             # Check record count
@@ -167,6 +166,28 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertEqual(len(train_images), 0)
             self.assertEqual(len(val_images), 1)
 
+    def test_annotate_with_multiple_workers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_dir = tmpdir / "raw_datas"
+            output_dir = tmpdir / "datas"
+            input_dir.mkdir()
+
+            for idx in range(3):
+                Image.new("RGB", (80, 80), (30, 180, 40)).save(input_dir / f"plant_{idx}.png")
+
+            records = annotate(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                train_ratio=1.0,
+                exg_threshold=0.1,
+                seed=42,
+                workers=2,
+            )
+
+            self.assertEqual(len(records), 3)
+            self.assertEqual(len(list((output_dir / "train").glob("*.json"))), 3)
+
     def test_annotate_writes_multiple_instance_polygons(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -193,8 +214,11 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             )
 
             data = json.loads((output_dir / "val" / "multi.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(data["shapes"]), 2)
-            self.assertTrue(all(shape["shape_type"] == "polygon" for shape in data["shapes"]))
+            self.assertEqual(len(data["shapes"]), 4)
+            self.assertEqual(
+                [shape["shape_type"] for shape in data["shapes"]],
+                ["polygon", "rectangle", "polygon", "rectangle"],
+            )
             self.assertTrue(all(shape["label"] == "healthy" for shape in data["shapes"]))
 
     def test_annotate_xanylabeling_output(self):
@@ -214,7 +238,6 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                 train_ratio=0.5,
                 exg_threshold=0.1,
                 seed=1,
-                copy_mode="copy",
             )
 
             self.assertEqual(len(records), 2)
@@ -235,11 +258,15 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertEqual(data["imageHeight"], 80)
             self.assertEqual(data["imageWidth"], 100)
             self.assertEqual(data["imagePath"], json_paths[0].with_suffix(".jpg").name)
-            self.assertEqual(len(data["shapes"]), 1)
-            shape = data["shapes"][0]
-            self.assertEqual(shape["label"], "healthy")
-            self.assertEqual(shape["shape_type"], "polygon")
-            self.assertGreaterEqual(len(shape["points"]), 3)
+            self.assertEqual(len(data["shapes"]), 2)
+            polygon_shape = data["shapes"][0]
+            rectangle_shape = data["shapes"][1]
+            self.assertEqual(polygon_shape["label"], "healthy")
+            self.assertEqual(polygon_shape["shape_type"], "polygon")
+            self.assertGreaterEqual(len(polygon_shape["points"]), 3)
+            self.assertEqual(rectangle_shape["label"], "healthy")
+            self.assertEqual(rectangle_shape["shape_type"], "rectangle")
+            self.assertEqual(len(rectangle_shape["points"]), 2)
 
     def test_annotate_missing_input_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:

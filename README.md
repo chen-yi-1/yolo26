@@ -1,7 +1,10 @@
-# YOLO26 Instance Segmentation
+# YOLO26 Instance Segmentation / Object Detection
 
-YOLO26 instance segmentation project using the official `ultralytics.YOLO` training,
-prediction, validation, and export pipeline.
+YOLO26 project using the official `ultralytics.YOLO` training, prediction,
+validation, and export pipeline. Set `TASK` in `project_config.py` to choose:
+
+- `segment`: instance segmentation with polygon labels
+- `detect`: object detection with rectangle/bbox labels
 
 ## Environment
 
@@ -13,8 +16,28 @@ Model weights and fonts are expected under `model_data/`, for example:
 
 ```text
 model_data/yolo26n-seg.pt
-model_data/yolo26x-seg.pt
+model_data/yolo26n.pt
 model_data/simhei.ttf
+```
+
+## Configuration
+
+Training, validation, and inference defaults are centralized in:
+
+```text
+project_config.py
+```
+
+For object detection, change:
+
+```python
+TASK = "detect"
+```
+
+For instance segmentation, use:
+
+```python
+TASK = "segment"
 ```
 
 ## Dataset Format
@@ -32,10 +55,16 @@ datasets/
   datasets.yaml
 ```
 
-Each label file should use normalized YOLO segmentation polygons:
+For segmentation, each label file uses normalized YOLO polygons:
 
 ```text
 class_id x1 y1 x2 y2 x3 y3 ...
+```
+
+For detection, each label file uses normalized YOLO boxes:
+
+```text
+class_id x_center y_center width height
 ```
 
 Example `datasets/datasets.yaml`:
@@ -56,6 +85,12 @@ After editing labels under `dataset/labels`, prepare the Ultralytics layout:
 python scripts/prepare_yolo_dataset.py --source dataset --output datasets
 ```
 
+To prepare detection labels from X-AnyLabeling rectangle shapes:
+
+```bash
+python scripts/prepare_yolo_dataset.py --source dataset --output datasets --task detect
+```
+
 This writes `datasets/images/{train,val}`, `datasets/labels/{train,val}`, and
 `datasets/datasets.yaml`.
 
@@ -70,10 +105,12 @@ python train.py
 `train.py` refreshes `datasets/` from `dataset/` before training, so manual
 edits in `dataset/labels` are picked up automatically.
 
-Training uses a two-phase freeze/unfreeze strategy with YOLO26 `-seg` weights:
+Training uses a two-phase freeze/unfreeze strategy. The run directory follows
+`TASK`:
 
 - Freeze phase writes to `runs/segment/logs/<train_name>_freeze/`
 - Unfreeze phase writes to `runs/segment/logs/<train_name>_unfreeze/`
+- Detection writes to `runs/detect/logs/...`
 
 For resume training, set `Init_Epoch > 0`. The script discovers the latest
 `last.pt` under `runs/segment/logs/` and resumes into that checkpoint's existing
@@ -81,14 +118,10 @@ run directory.
 
 ## Predict
 
-Edit `yolo.py` defaults if needed:
+Edit inference defaults in `project_config.py` under `INFER`.
 
-```python
-"model_path": "model_data/yolo26x-seg.pt"
-"classes_path": "datasets/datasets.yaml"
-```
-
-Prediction overlays instance masks, mask contours, boxes, class names, and confidence scores.
+Prediction overlays boxes, class names, and confidence scores. Segmentation
+models also overlay instance masks and mask contours.
 
 Run:
 
@@ -119,10 +152,3 @@ python get_map.py
 Use `split="val"` for the validation set, or add a `test:` entry to
 `datasets/datasets.yaml` and set `split="test"`.
 
-## Model Summary
-
-```bash
-python summary.py
-```
-
-Edit `phi` in `summary.py` to select `n/s/m/l/x`.

@@ -4,7 +4,8 @@ Auto-annotate seedling images for X-AnyLabeling editing using RGB vegetation ind
 
 Assumes one seedling per image (one pot, large in frame).
 - Polygon: external contour of ExG vegetation mask
-- Label: every generated polygon is marked as healthy for manual review/editing
+- Rectangle: bounding box around each extracted vegetation instance
+- Label: every generated shape is marked as healthy for manual review/editing
 
 Input:  raw_data/        directory of seedling images
 Output: dataset/         X-AnyLabeling dataset (train/ and val/ image+json pairs)
@@ -14,6 +15,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import json
 import random
 import shutil
@@ -303,6 +305,17 @@ def contour_to_polygon_points(contour, image_shape):
     return points if len(points) >= 3 else None
 
 
+def mask_to_rectangle_points(mask):
+    """Return X-AnyLabeling rectangle points [[x_min, y_min], [x_max, y_max]]."""
+    ys, xs = np.where(mask)
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+    return [
+        [float(xs.min()), float(ys.min())],
+        [float(xs.max()), float(ys.max())],
+    ]
+
+
 def extract_mask_polygons(
     mask,
     epsilon_ratio=0.003,
@@ -402,7 +415,15 @@ def extract_mask_instances(
         import cv2
     except ImportError:
         polygon = extract_mask_polygon_fallback(mask)
-        return [{"polygon": polygon, "mask": mask, "area": int(np.sum(mask))}] if polygon is not None else []
+        rectangle = mask_to_rectangle_points(mask)
+        return [
+            {
+                "polygon": polygon,
+                "rectangle": rectangle,
+                "mask": mask,
+                "area": int(np.sum(mask)),
+            }
+        ] if polygon is not None and rectangle is not None else []
 
     refined = refine_mask(
         mask,
@@ -448,6 +469,7 @@ def extract_mask_instances(
         instances.append(
             {
                 "polygon": points,
+                "rectangle": mask_to_rectangle_points(component_mask),
                 "mask": component_mask,
                 "area": int(np.sum(component_mask)),
             }
@@ -504,20 +526,24 @@ def build_xanylabeling_json(rec, image_name):
     """Build an X-AnyLabeling/Labelme-style JSON annotation dict."""
     shapes = []
     for instance in rec["instances"]:
-        shapes.append(
-            {
-                "label": CLASS_NAMES[instance["class_id"]],
-                "score": instance["confidence"],
-                "points": instance["polygon"],
-                "group_id": None,
-                "description": instance.get("description") or instance.get("reason"),
-                "difficult": False,
-                "shape_type": "polygon",
-                "flags": None,
-                "attributes": {},
-                "kie_linking": [],
-            }
-        )
+        for shape_type, points in (
+            ("polygon", instance["polygon"]),
+            ("rectangle", instance["rectangle"]),
+        ):
+            shapes.append(
+                {
+                    "label": CLASS_NAMES[instance["class_id"]],
+                    "score": instance["confidence"],
+                    "points": points,
+                    "group_id": None,
+                    "description": instance.get("description") or instance.get("reason"),
+                    "difficult": False,
+                    "shape_type": shape_type,
+                    "flags": None,
+                    "attributes": {},
+                    "kie_linking": [],
+                }
+            )
 
     return build_xanylabeling_data(image_name, rec["image_width"], rec["image_height"], shapes)
 
@@ -535,6 +561,64 @@ def write_xanylabeling_json(json_path, rec, image_name):
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
+
+def _analyze_image(task):
+    """Analyze one image and return an annotation record, or a skip warning."""
+    img_path, params = task
+    try:
+        rgb = load_rgb_float(img_path)
+    except Exception as exc:
+        return None, f"  Warning: skipped {img_path.name}: {exc}"
+
+    indices = calculate_indices(rgb)
+    mask = create_vegetation_mask(
+        indices,
+        params["exg_threshold"],
+        rgb=rgb,
+        min_saturation=params["min_saturation"],
+        min_value=params["min_value"],
+        max_value=params["max_value"],
+    )
+    extracted_instances = extract_mask_instances(
+        mask,
+        score_map=indices["ExG"],
+        epsilon_ratio=params["polygon_epsilon"],
+        min_area_ratio=params["min_area_ratio"],
+        min_component_score=params["min_component_exg_mean"],
+        close_kernel_ratio=params["close_kernel_ratio"],
+        open_kernel_ratio=params["open_kernel_ratio"],
+        min_points=params["min_polygon_points"],
+        max_points=params["max_polygon_points"],
+        max_instances=params["max_instances"],
+    )
+    instances = []
+    for instance_index, extracted in enumerate(extracted_instances):
+        instances.append(
+            {
+                "image_path": img_path,
+                "image_stem": img_path.stem,
+                "instance_index": instance_index,
+                "polygon": extracted["polygon"],
+                "rectangle": extracted["rectangle"],
+                "area": extracted["area"],
+                "class_id": 0,
+                "confidence": 1.0,
+                "description": "auto-labeled healthy; review manually",
+            }
+        )
+
+    return (
+        {
+            "image_path": img_path,
+            "stem": img_path.stem,
+            "suffix": img_path.suffix,
+            "image_height": rgb.shape[0],
+            "image_width": rgb.shape[1],
+            "instances": instances,
+        },
+        None,
+    )
 
 
 def annotate(
@@ -555,7 +639,7 @@ def annotate(
     max_instances=DEFAULT_MAX_INSTANCES,
     recursive=False,
     seed=42,
-    copy_mode="copy",
+    workers=1,
 ):
     """Run the full annotation pipeline.
 
@@ -577,7 +661,7 @@ def annotate(
         max_instances: max polygons per image by area; 0 means no limit.
         recursive: whether to search input_dir recursively.
         seed: random seed for reproducible train/val split.
-        copy_mode: "copy" to duplicate images, "symlink" for symlinks.
+        workers: number of worker processes for image analysis; 1 disables multiprocessing.
 
     Returns:
         list of annotation records (dicts).
@@ -587,6 +671,8 @@ def annotate(
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1, got: {workers}")
 
     # ---- 1. Discover images ----
     image_paths = discover_images(input_dir, recursive)
@@ -595,60 +681,41 @@ def annotate(
 
     print(f"Found {len(image_paths)} images in {input_dir}")
 
-    # ---- 2. Per-image: indices + instance polygons ----
+    # ---- 2. Per-image: indices + instance polygons/rectangles ----
+    analysis_params = {
+        "exg_threshold": exg_threshold,
+        "min_saturation": min_saturation,
+        "min_value": min_value,
+        "max_value": max_value,
+        "min_component_exg_mean": min_component_exg_mean,
+        "polygon_epsilon": polygon_epsilon,
+        "min_area_ratio": min_area_ratio,
+        "close_kernel_ratio": close_kernel_ratio,
+        "open_kernel_ratio": open_kernel_ratio,
+        "min_polygon_points": min_polygon_points,
+        "max_polygon_points": max_polygon_points,
+        "max_instances": max_instances,
+    }
+    tasks = [(img_path, analysis_params) for img_path in image_paths]
+    if workers == 1:
+        results = [_analyze_image(task) for task in tqdm(tasks, desc="Analyzing images", unit="image")]
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(
+                tqdm(
+                    executor.map(_analyze_image, tasks),
+                    total=len(tasks),
+                    desc=f"Analyzing images ({workers} workers)",
+                    unit="image",
+                )
+            )
+
     records = []
-    for img_path in tqdm(image_paths, desc="Analyzing images", unit="image"):
-        try:
-            rgb = load_rgb_float(img_path)
-        except Exception as exc:
-            print(f"  Warning: skipped {img_path.name}: {exc}")
-            continue
-
-        indices = calculate_indices(rgb)
-        mask = create_vegetation_mask(
-            indices,
-            exg_threshold,
-            rgb=rgb,
-            min_saturation=min_saturation,
-            min_value=min_value,
-            max_value=max_value,
-        )
-        extracted_instances = extract_mask_instances(
-            mask,
-            score_map=indices["ExG"],
-            epsilon_ratio=polygon_epsilon,
-            min_area_ratio=min_area_ratio,
-            min_component_score=min_component_exg_mean,
-            close_kernel_ratio=close_kernel_ratio,
-            open_kernel_ratio=open_kernel_ratio,
-            min_points=min_polygon_points,
-            max_points=max_polygon_points,
-            max_instances=max_instances,
-        )
-        instances = []
-        for instance_index, extracted in enumerate(extracted_instances):
-            instance = {
-                "image_path": img_path,
-                "image_stem": img_path.stem,
-                "instance_index": instance_index,
-                "polygon": extracted["polygon"],
-                "area": extracted["area"],
-                "class_id": 0,
-                "confidence": 1.0,
-                "description": "auto-labeled healthy; review manually",
-            }
-            instances.append(instance)
-
-        records.append(
-            {
-                "image_path": img_path,
-                "stem": img_path.stem,
-                "suffix": img_path.suffix,
-                "image_height": rgb.shape[0],
-                "image_width": rgb.shape[1],
-                "instances": instances,
-            }
-        )
+    for record, warning in results:
+        if warning:
+            print(warning)
+        if record is not None:
+            records.append(record)
 
     if not records:
         raise ValueError("No images could be processed")
@@ -668,8 +735,6 @@ def annotate(
     # ---- 4. Write output ----
     # dataset/{train,val}/ with image + JSON pairs, plus dataset/classes.txt
 
-    copy_fn = shutil.copy2 if copy_mode == "copy" else lambda src, dst: Path(dst).symlink_to(Path(src).resolve())
-
     train_count = 0
     val_count = 0
     no_polygon_count = 0
@@ -683,7 +748,7 @@ def annotate(
 
         # Copy image
         try:
-            copy_fn(rec["image_path"], img_dst)
+            shutil.copy2(rec["image_path"], img_dst)
         except Exception as exc:
             print(f"  Warning: failed to copy {rec['image_path'].name}: {exc}")
             continue
@@ -735,7 +800,7 @@ def parse_args():
     )
     parser.add_argument(
         "--input",
-        default="raw_data",
+        default="raw_datas",
         help="Directory of seedling images (default: raw_data).",
     )
     parser.add_argument(
@@ -833,10 +898,10 @@ def parse_args():
         help="Random seed for train/val split (default: 42).",
     )
     parser.add_argument(
-        "--copy-mode",
-        choices=["copy", "symlink"],
-        default="copy",
-        help="How to place images in output: copy (default) or symlink.",
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of worker processes for image analysis. Use 4-8 for large datasets (default: 1).",
     )
     return parser.parse_args()
 
@@ -861,7 +926,7 @@ def main():
         max_instances=args.max_instances,
         recursive=args.recursive,
         seed=args.seed,
-        copy_mode=args.copy_mode,
+        workers=args.workers,
     )
 
 

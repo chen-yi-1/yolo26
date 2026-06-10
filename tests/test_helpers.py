@@ -67,7 +67,13 @@ class HelperTests(unittest.TestCase):
         from get_map import default_model_path
 
         with patch("glob.glob", return_value=[]):
-            self.assertEqual(default_model_path(), "model_data/yolo26x-seg.pt")
+            self.assertEqual(default_model_path(), "model_data/yolo26n-seg.pt")
+
+    def test_default_map_model_path_falls_back_for_detect(self):
+        from get_map import default_model_path
+
+        with patch("glob.glob", return_value=[]):
+            self.assertEqual(default_model_path("detect"), "model_data/yolo26n.pt")
 
     def test_default_map_model_path_uses_latest_unfreeze_best(self):
         from get_map import default_model_path

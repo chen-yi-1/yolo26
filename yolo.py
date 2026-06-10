@@ -8,20 +8,21 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO as UltralyticsYOLO
 
+from project_config import INFER, TASK, get_infer_model_path
 from utils.utils import (cvtColor, get_classes, measure_text, preprocess_input,
                          resize_image, show_config)
 
 
 class YOLO(object):
     _defaults = {
-        "model_path"        : 'model_data/yolo26x-seg.pt',
-        "classes_path"      : os.path.join('datasets', 'datasets.yaml'),
-        "input_shape"       : [640, 640],
-        "confidence"        : 0.5,
-        "nms_iou"           : 0.3,
-        "mask_alpha"        : 0.35,
-        "letterbox_image"   : True,
-        "cuda"              : True,
+        "model_path"        : get_infer_model_path(TASK),
+        "classes_path"      : INFER["classes_path"],
+        "input_shape"       : INFER["input_shape"],
+        "confidence"        : INFER["confidence"],
+        "nms_iou"           : INFER["nms_iou"],
+        "mask_alpha"        : INFER["mask_alpha"],
+        "letterbox_image"   : INFER["letterbox_image"],
+        "cuda"              : INFER["cuda"],
     }
 
     @classmethod

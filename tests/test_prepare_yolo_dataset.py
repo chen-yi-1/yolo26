@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +6,11 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from scripts.prepare_yolo_dataset import prepare_yolo_dataset, validate_segmentation_label
+from scripts.prepare_yolo_dataset import (
+    prepare_yolo_dataset,
+    validate_detection_label,
+    validate_segmentation_label,
+)
 
 
 class PrepareYoloDatasetTests(unittest.TestCase):
@@ -55,6 +60,53 @@ class PrepareYoloDatasetTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 validate_segmentation_label(label_path, class_count=2)
+
+    def test_prepare_detection_dataset_from_xanylabeling_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "dataset"
+            output = root / "datasets"
+            yaml_path = output / "datasets.yaml"
+
+            (source / "train").mkdir(parents=True)
+            (source / "val").mkdir()
+            (source / "classes.txt").write_text("healthy\nabnormal\n", encoding="utf-8")
+
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "train" / "plant_train.jpg")
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "val" / "plant_val.jpg")
+
+            label_data = {
+                "imageWidth": 100,
+                "imageHeight": 80,
+                "shapes": [
+                    {
+                        "label": "healthy",
+                        "shape_type": "polygon",
+                        "points": [[10, 20], [40, 20], [40, 60]],
+                    },
+                    {
+                        "label": "healthy",
+                        "shape_type": "rectangle",
+                        "points": [[10, 20], [50, 60]],
+                    },
+                ],
+            }
+            (source / "train" / "plant_train.json").write_text(
+                json.dumps(label_data),
+                encoding="utf-8",
+            )
+            (source / "val" / "plant_val.json").write_text(
+                json.dumps(label_data),
+                encoding="utf-8",
+            )
+
+            result = prepare_yolo_dataset(source, output, yaml_path, task="detect")
+
+            self.assertEqual(result["task"], "detect")
+            self.assertEqual(result["train"], 1)
+            label_text = (output / "labels" / "train" / "plant_train.txt").read_text(encoding="utf-8")
+            self.assertEqual(label_text, "0 0.300000 0.500000 0.400000 0.500000\n")
+            validate_detection_label(output / "labels" / "train" / "plant_train.txt", class_count=2)
 
 
 if __name__ == "__main__":

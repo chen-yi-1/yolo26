@@ -8,6 +8,7 @@ from contextlib import contextmanager
 
 import torch
 
+from project_config import DATA, TASK, TRAIN, get_model_path, get_run_task
 from scripts.prepare_yolo_dataset import prepare_yolo_dataset
 
 
@@ -81,17 +82,17 @@ if __name__ == "__main__":
     #   Cuda    是否使用Cuda
     #           没有GPU可以设置成False
     #---------------------------------#
-    Cuda            = False
+    Cuda            = TRAIN["cuda"]
     #----------------------------------------------#
     #   Seed    用于固定随机种子
     #           使得每次独立训练都可以获得一样的结果
     #----------------------------------------------#
-    seed            = 11
+    seed            = TRAIN["seed"]
     #---------------------------------------------------------------------#
     #   fp16        是否使用混合精度训练
     #               可减少约一半的显存、需要pytorch1.7.1以上
     #---------------------------------------------------------------------#
-    fp16            = True
+    fp16            = TRAIN["fp16"]
     #----------------------------------------------------------------------------------------------------------------------------#
     #   权值文件的下载请看README，可以通过网盘下载。模型的 预训练权重 对不同数据集是通用的，因为特征是通用的。
     #   模型的 预训练权重 比较重要的部分是 主干特征提取网络的权值部分，用于进行特征提取。
@@ -108,17 +109,18 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolo26n-seg.pt'
+    task            = TASK
+    model_path      = get_model_path(task)
     #---------------------------------------------------------------------#
     #   data_yaml        YOLO格式的数据集配置文件路径
     #                    文件中应包含 train/val 路径 和 names 类别名
     #---------------------------------------------------------------------#
-    data_yaml       = os.path.join('datasets', 'datasets.yaml')
-    prepare_yolo_dataset(source_dir='dataset', output_dir='datasets', yaml_path=data_yaml)
+    # data_yaml       = DATA["yaml"]
+    # prepare_yolo_dataset(source_dir=DATA["source"], output_dir=DATA["output"], yaml_path=data_yaml, task=task)
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
-    input_shape     = [640, 640]
+    input_shape     = TRAIN["input_shape"]
     #----------------------------------------------------------------------------------------------------------------------------#
     #   YOLO26 训练策略（ultralytics optimizer="auto" 默认使用 Adam）：
     #   小数据集 + 预训练模型 → Adam 优化器，100 epochs 即可收敛
@@ -149,9 +151,9 @@ if __name__ == "__main__":
     #   Freeze_batch_size   模型冻结训练的batch_size
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
-    Init_Epoch          = 0
-    Freeze_Epoch        = 5
-    Freeze_batch_size   = 32
+    Init_Epoch          = TRAIN["init_epoch"]
+    Freeze_Epoch        = TRAIN["freeze_epoch"]
+    Freeze_batch_size   = TRAIN["freeze_batch_size"]
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
@@ -160,13 +162,13 @@ if __name__ == "__main__":
     #                           YOLO26 小数据集推荐 100 epochs
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 10
-    Unfreeze_batch_size = 16
+    UnFreeze_Epoch      = TRAIN["unfreeze_epoch"]
+    Unfreeze_batch_size = TRAIN["unfreeze_batch_size"]
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
     #                   默认先冻结主干训练后解冻训练。
     #------------------------------------------------------------------#
-    Freeze_Train        = True
+    Freeze_Train        = TRAIN["freeze_train"]
 
     #------------------------------------------------------------------#
     #   其它训练参数：学习率、优化器、学习率下降有关
@@ -176,7 +178,7 @@ if __name__ == "__main__":
     #                   Adam: 1e-3    SGD: 1e-2
     #   Min_lr          模型的最小学习率，默认为最大学习率的0.01
     #------------------------------------------------------------------#
-    Init_lr             = 1e-3
+    Init_lr             = TRAIN["init_lr"]
     Min_lr              = Init_lr * 0.01
     #------------------------------------------------------------------#
     #   optimizer_type  使用到的优化器种类，可选的有auto、adam、sgd
@@ -188,13 +190,13 @@ if __name__ == "__main__":
     #   weight_decay    权值衰减，可防止过拟合
     #                   adam建议设置为0。
     #------------------------------------------------------------------#
-    optimizer_type      = "auto"
-    momentum            = 0.937
-    weight_decay        = 0
+    optimizer_type      = TRAIN["optimizer_type"]
+    momentum            = TRAIN["momentum"]
+    weight_decay        = TRAIN["weight_decay"]
     #------------------------------------------------------------------#
     #   lr_decay_type   使用到的学习率下降方式，可选的有step、cos
     #------------------------------------------------------------------#
-    lr_decay_type       = "cos"
+    lr_decay_type       = TRAIN["lr_decay_type"]
     #------------------------------------------------------------------#
     #   mosaic              马赛克数据增强。
     #   mosaic_prob         每个step有多少概率使用mosaic数据增强，默认100%。
@@ -209,37 +211,38 @@ if __name__ == "__main__":
     #                       默认为前70%个epoch，100个世代会开启70个世代。
     #                       对应ultralytics的close_mosaic参数：最后N个epoch关闭mosaic
     #------------------------------------------------------------------#
-    mosaic              = True
-    mosaic_prob         = 0.5
-    mixup               = True
-    mixup_prob          = 0.5
-    special_aug_ratio   = 0.7
+    mosaic              = TRAIN["mosaic"]
+    mosaic_prob         = TRAIN["mosaic_prob"]
+    mixup               = TRAIN["mixup"]
+    mixup_prob          = TRAIN["mixup_prob"]
+    special_aug_ratio   = TRAIN["special_aug_ratio"]
     #------------------------------------------------------------------#
     #   save_period     多少个epoch保存一次权值
     #------------------------------------------------------------------#
-    save_period         = 10
+    save_period         = TRAIN["save_period"]
     #------------------------------------------------------------------#
     #   save_dir        训练输出的 project 名称（ultralytics 实际路径为 runs/segment/{save_dir}/{train_name}/）
     #------------------------------------------------------------------#
-    save_dir            = 'logs'
+    save_dir            = TRAIN["save_dir"]
     #------------------------------------------------------------------#
     #   eval_flag       是否在训练时进行评估，评估对象为 dataset.yaml 的验证集
     #   注意：ultralytics 默认每个epoch都验证一次，不支持eval_period间隔设置
     #   如需减少验证频率，需要使用回调函数自定义验证逻辑
     #   get_map.py 使用同一个官方验证入口，可通过 split 选择 val/test。
     #------------------------------------------------------------------#
-    eval_flag           = True
+    eval_flag           = TRAIN["eval_flag"]
     #------------------------------------------------------------------#
     #   num_workers     用于设置是否使用多线程读取数据
     #                   开启后会加快数据读取速度，但是会占用更多内存
     #                   内存较小的电脑可以设置为2或者0
     #------------------------------------------------------------------#
-    num_workers         = 4
+    num_workers         = TRAIN["num_workers"]
 
     #------------------------------------------------------#
     #   设置用到的显卡
     #------------------------------------------------------#
     device = 'cuda' if Cuda else 'cpu'
+    run_task = get_run_task(task)
 
     #------------------------------------------------------#
     #   生成训练日志名称（Phase 1 和 Phase 2 共用）
@@ -250,7 +253,7 @@ if __name__ == "__main__":
     #   断点续训：Init_Epoch > 0 时自动发现最新 checkpoint
     #------------------------------------------------------#
     if Init_Epoch > 0:
-        base_dir = os.path.join('runs', 'segment', save_dir)
+        base_dir = os.path.join('runs', run_task, save_dir)
         ckpt_paths = []
         if os.path.isdir(base_dir):
             ckpt_paths = sorted(
@@ -287,13 +290,13 @@ if __name__ == "__main__":
         train_name = os.path.basename(os.path.dirname(os.path.dirname(model_path)))
         print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
         print(f"  {model_path}")
-        print(f"  Results will be saved to: runs/segment/{save_dir}/{train_name}/")
+        print(f"  Results will be saved to: runs/{run_task}/{save_dir}/{train_name}/")
 
     freeze_train_name, unfreeze_train_name = phase_train_names(train_name, Init_Epoch > 0)
 
     from utils.utils import show_config
     show_config(
-        model_path = model_path, data_yaml = data_yaml, input_shape = input_shape,
+        task = task, model_path = model_path, data_yaml = data_yaml, input_shape = input_shape,
         Init_Epoch = Init_Epoch, Freeze_Epoch = Freeze_Epoch, UnFreeze_Epoch = UnFreeze_Epoch,
         Freeze_batch_size = Freeze_batch_size, Unfreeze_batch_size = Unfreeze_batch_size,
         Freeze_Train = Freeze_Train,
@@ -351,7 +354,7 @@ if __name__ == "__main__":
         dfl=1.5,
         amp=fp16,
         seed=seed,
-        project=os.path.join('runs', 'segment', save_dir),
+        project=os.path.join('runs', run_task, save_dir),
         exist_ok=True,
         save_period=save_period,
         val=eval_flag,
