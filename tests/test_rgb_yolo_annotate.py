@@ -300,7 +300,7 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertGreaterEqual(len(polygon_shape["points"]), 3)
             self.assertEqual(rectangle_shape["label"], "healthy")
             self.assertEqual(rectangle_shape["shape_type"], "rectangle")
-            self.assertEqual(len(rectangle_shape["points"]), 2)
+            self.assertEqual(len(rectangle_shape["points"]), 4)
 
     def test_annotate_missing_input_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -301,13 +301,19 @@ def contour_to_polygon_points(contour, image_shape):
 
 
 def mask_to_rectangle_points(mask):
-    """Return X-AnyLabeling rectangle points [[x_min, y_min], [x_max, y_max]]."""
+    """Return X-AnyLabeling rectangle points as four corners."""
     ys, xs = np.where(mask)
     if len(xs) == 0 or len(ys) == 0:
         return None
+    x_min = float(xs.min())
+    y_min = float(ys.min())
+    x_max = float(xs.max())
+    y_max = float(ys.max())
     return [
-        [float(xs.min()), float(ys.min())],
-        [float(xs.max()), float(ys.max())],
+        [x_min, y_min],
+        [x_max, y_min],
+        [x_max, y_max],
+        [x_min, y_max],
     ]
 
 
@@ -932,7 +938,7 @@ def parse_args():
     parser.add_argument(
         "--workers",
         type=int,
-        default=8,
+        default=4,
         help="Number of worker processes for image analysis. Use 4-8 for large datasets (default: 1).",
     )
     return parser.parse_args()

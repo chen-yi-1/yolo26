@@ -87,7 +87,7 @@ class PrepareYoloDatasetTests(unittest.TestCase):
                     {
                         "label": "healthy",
                         "shape_type": "rectangle",
-                        "points": [[10, 20], [50, 60]],
+                        "points": [[10, 20], [50, 20], [50, 60], [10, 60]],
                     },
                 ],
             }

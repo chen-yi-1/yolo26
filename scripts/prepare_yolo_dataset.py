@@ -146,12 +146,12 @@ def shape_to_yolo_row(shape, names, image_width, image_height, task, json_path):
         return " ".join([str(class_id)] + [f"{coord:.6f}" for coord in coords])
 
     if task == "detect":
-        if shape_type != "rectangle" or len(points) != 2:
+        if shape_type != "rectangle" or len(points) < 2:
             return None
-        x1, y1 = points[0]
-        x2, y2 = points[1]
-        x_min, x_max = sorted([float(x1), float(x2)])
-        y_min, y_max = sorted([float(y1), float(y2)])
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
         coords = [
             ((x_min + x_max) / 2.0) / image_width,
             ((y_min + y_max) / 2.0) / image_height,
