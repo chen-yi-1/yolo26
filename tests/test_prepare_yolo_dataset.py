@@ -14,20 +14,23 @@ from scripts.prepare_yolo_dataset import (
 
 
 class PrepareYoloDatasetTests(unittest.TestCase):
-    def test_prepare_yolo_dataset_from_edited_labels(self):
+    def test_prepare_yolo_dataset_from_labels_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "dataset"
             output = root / "datasets"
             yaml_path = output / "datasets.yaml"
 
-            (source / "train").mkdir(parents=True)
-            (source / "val").mkdir()
-            (source / "labels").mkdir()
+            (source / "labels").mkdir(parents=True)
+            (source / "healthy").mkdir()
+            (source / "abnormal").mkdir()
             (source / "classes.txt").write_text("healthy\nabnormal\n", encoding="utf-8")
 
-            Image.new("RGB", (20, 20), (30, 180, 40)).save(source / "train" / "plant_train.JPG")
-            Image.new("RGB", (20, 20), (30, 180, 40)).save(source / "val" / "plant_val.JPG")
+            Image.new("RGB", (20, 20), (30, 180, 40)).save(source / "healthy" / "plant_train.jpg")
+            Image.new("RGB", (20, 20), (30, 180, 40)).save(source / "abnormal" / "plant_val.jpg")
+            (source / "healthy" / "plant_train.json").write_text('{"imageWidth": 20, "imageHeight": 20, "shapes": []}', encoding="utf-8")
+            (source / "abnormal" / "plant_val.json").write_text('{"imageWidth": 20, "imageHeight": 20, "shapes": []}', encoding="utf-8")
+
             (source / "labels" / "plant_train.txt").write_text(
                 "0 0.1 0.1 0.9 0.1 0.9 0.9\n",
                 encoding="utf-8",
@@ -37,14 +40,17 @@ class PrepareYoloDatasetTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = prepare_yolo_dataset(source, output, yaml_path)
+            result = prepare_yolo_dataset(source, output, yaml_path, train_ratio=1.0, seed=7)
 
-            self.assertEqual(result["train"], 1)
-            self.assertEqual(result["val"], 1)
-            self.assertTrue((output / "images" / "train" / "plant_train.JPG").exists())
+            self.assertEqual(result["train"], 2)
+            self.assertEqual(result["val"], 0)
+            self.assertTrue((output / "images" / "train" / "plant_train.jpg").exists())
             self.assertTrue((output / "labels" / "train" / "plant_train.txt").exists())
-            self.assertTrue((output / "images" / "val" / "plant_val.JPG").exists())
-            self.assertTrue((output / "labels" / "val" / "plant_val.txt").exists())
+            self.assertTrue((output / "images" / "train" / "plant_val.jpg").exists())
+            self.assertTrue((output / "labels" / "train" / "plant_val.txt").exists())
+            self.assertFalse((output / "images" / "train" / "plant_train.json").exists())
+            self.assertTrue((source / "healthy" / "plant_train.json").exists())
+            self.assertTrue((source / "abnormal" / "plant_val.json").exists())
 
             data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             self.assertEqual(data["path"], str(output.resolve()).replace("\\", "/"))
@@ -61,52 +67,91 @@ class PrepareYoloDatasetTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_segmentation_label(label_path, class_count=2)
 
-    def test_prepare_detection_dataset_from_xanylabeling_json(self):
+    def test_prepare_detection_dataset_from_labels_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "dataset"
             output = root / "datasets"
             yaml_path = output / "datasets.yaml"
 
-            (source / "train").mkdir(parents=True)
-            (source / "val").mkdir()
+            (source / "labels").mkdir(parents=True)
+            (source / "healthy").mkdir()
+            (source / "abnormal").mkdir()
             (source / "classes.txt").write_text("healthy\nabnormal\n", encoding="utf-8")
 
-            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "train" / "plant_train.jpg")
-            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "val" / "plant_val.jpg")
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "healthy" / "plant_train.jpg")
+            Image.new("RGB", (100, 80), (30, 180, 40)).save(source / "abnormal" / "plant_val.jpg")
+            (source / "healthy" / "plant_train.json").write_text('{"imageWidth": 100, "imageHeight": 80, "shapes": []}', encoding="utf-8")
+            (source / "abnormal" / "plant_val.json").write_text('{"imageWidth": 100, "imageHeight": 80, "shapes": []}', encoding="utf-8")
 
-            label_data = {
-                "imageWidth": 100,
-                "imageHeight": 80,
-                "shapes": [
-                    {
-                        "label": "healthy",
-                        "shape_type": "polygon",
-                        "points": [[10, 20], [40, 20], [40, 60]],
-                    },
-                    {
-                        "label": "healthy",
-                        "shape_type": "rectangle",
-                        "points": [[10, 20], [50, 20], [50, 60], [10, 60]],
-                    },
-                ],
-            }
-            (source / "train" / "plant_train.json").write_text(
-                json.dumps(label_data),
+            (source / "labels" / "plant_train.txt").write_text(
+                "0 0.300000 0.500000 0.400000 0.500000\n",
                 encoding="utf-8",
             )
-            (source / "val" / "plant_val.json").write_text(
-                json.dumps(label_data),
+            (source / "labels" / "plant_val.txt").write_text(
+                "1 0.250000 0.500000 0.200000 0.300000\n",
                 encoding="utf-8",
             )
 
-            result = prepare_yolo_dataset(source, output, yaml_path, task="detect")
+            result = prepare_yolo_dataset(source, output, yaml_path, task="detect", train_ratio=1.0)
 
             self.assertEqual(result["task"], "detect")
-            self.assertEqual(result["train"], 1)
+            self.assertEqual(result["train"], 2)
             label_text = (output / "labels" / "train" / "plant_train.txt").read_text(encoding="utf-8")
             self.assertEqual(label_text, "0 0.300000 0.500000 0.400000 0.500000\n")
             validate_detection_label(output / "labels" / "train" / "plant_train.txt", class_count=2)
+            self.assertFalse((output / "images" / "train" / "plant_train.json").exists())
+            self.assertTrue((source / "healthy" / "plant_train.json").exists())
+
+    def test_prepare_dataset_samples_then_splits(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "dataset"
+            output = root / "datasets"
+            yaml_path = output / "datasets.yaml"
+
+            (source / "labels").mkdir(parents=True)
+            (source / "healthy").mkdir()
+            (source / "abnormal").mkdir()
+            (source / "classes.txt").write_text("healthy\nabnormal\n", encoding="utf-8")
+
+            for index in range(4):
+                image_name = f"plant_{index}.jpg"
+                class_dir = source / ("healthy" if index % 2 == 0 else "abnormal")
+                Image.new("RGB", (100, 80), (30, 180, 40)).save(class_dir / image_name)
+                (source / "labels" / f"plant_{index}.txt").write_text(
+                    "0 0.1 0.1 0.9 0.1 0.9 0.9\n",
+                    encoding="utf-8",
+                )
+
+            result = prepare_yolo_dataset(
+                source,
+                output,
+                yaml_path,
+                task="segment",
+                sample_percent=50,
+                train_ratio=0.8,
+                seed=7,
+            )
+
+            self.assertEqual(result["train"], 1)
+            self.assertEqual(result["val"], 1)
+            self.assertEqual(len(list((output / "images" / "train").glob("*.jpg"))), 1)
+            self.assertEqual(len(list((output / "images" / "val").glob("*.jpg"))), 1)
+            self.assertEqual(len(list((output / "labels" / "train").glob("*.txt"))), 1)
+            self.assertEqual(len(list((output / "labels" / "val").glob("*.txt"))), 1)
+
+    def test_prepare_yolo_dataset_rejects_missing_labels_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "dataset"
+            output = root / "datasets"
+            source.mkdir(parents=True)
+            (source / "healthy").mkdir()
+            (source / "classes.txt").write_text("healthy\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, "labels"):
+                prepare_yolo_dataset(source, output, train_ratio=0.5)
 
 
 if __name__ == "__main__":

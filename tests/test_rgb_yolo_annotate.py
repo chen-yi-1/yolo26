@@ -112,17 +112,16 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             records = annotate(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                train_ratio=0.8,
                 exg_threshold=0.1,
-                seed=42,
             )
 
             # Check record count
             self.assertEqual(len(records), 5)
 
-            # Check default output structure: X-AnyLabeling image/json pairs.
-            self.assertTrue((output_dir / "train").is_dir())
-            self.assertTrue((output_dir / "val").is_dir())
+            # Check default output structure: X-AnyLabeling image/json pairs mirror input folders.
+            self.assertTrue((output_dir / "healthy").is_dir())
+            self.assertFalse((output_dir / "train").exists())
+            self.assertFalse((output_dir / "val").exists())
             self.assertFalse((output_dir / "dataset.yaml").exists())
             self.assertFalse((output_dir / "images").exists())
             self.assertFalse((output_dir / "labels").exists())
@@ -131,21 +130,15 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                 "healthy\n",
             )
 
-            # Train/val split: 0.8 脳 5 = 4 train, 1 val
-            train_images = list((output_dir / "train").glob("*.jpg"))
-            val_images = list((output_dir / "val").glob("*.jpg"))
-            self.assertEqual(len(train_images), 4)
-            self.assertEqual(len(val_images), 1)
+            output_images = list((output_dir / "healthy").glob("*.jpg"))
+            self.assertEqual(len(output_images), 5)
 
             # Each image has a corresponding X-AnyLabeling JSON file.
-            train_labels = list((output_dir / "train").glob("*.json"))
-            val_labels = list((output_dir / "val").glob("*.json"))
-            self.assertEqual(len(train_labels), 4)
-            self.assertEqual(len(val_labels), 1)
+            output_labels = list((output_dir / "healthy").glob("*.json"))
+            self.assertEqual(len(output_labels), 5)
 
             # Verify JSON label format.
-            all_labels = train_labels + val_labels
-            for lbl_path in all_labels:
+            for lbl_path in output_labels:
                 data = json.loads(lbl_path.read_text(encoding="utf-8"))
                 self.assertEqual(data["imagePath"], lbl_path.with_suffix(".jpg").name)
                 self.assertIn("shapes", data)
@@ -165,9 +158,7 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             annotate(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                train_ratio=1.0,
                 exg_threshold=0.1,
-                seed=42,
             )
 
             self.assertEqual(
@@ -175,13 +166,13 @@ class RGBYoloAnnotateTests(unittest.TestCase):
                 "abnormal\nhealthy\n",
             )
 
-            abnormal_data = json.loads((output_dir / "train" / "abnormal_01.json").read_text(encoding="utf-8"))
-            healthy_data = json.loads((output_dir / "train" / "healthy_01.json").read_text(encoding="utf-8"))
+            abnormal_data = json.loads((output_dir / "abnormal" / "abnormal_01.json").read_text(encoding="utf-8"))
+            healthy_data = json.loads((output_dir / "healthy" / "healthy_01.json").read_text(encoding="utf-8"))
             self.assertTrue(all(shape["label"] == "abnormal" for shape in abnormal_data["shapes"]))
             self.assertTrue(all(shape["label"] == "healthy" for shape in healthy_data["shapes"]))
 
-    def test_annotate_all_val_when_train_ratio_zero(self):
-        """Edge case: train_ratio=0 puts everything in val."""
+    def test_annotate_writes_mirrored_output_without_train_val_split(self):
+        """Output mirrors input folders instead of splitting into train/val."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             input_dir = tmpdir / "raw_data"
@@ -190,12 +181,12 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             class_dir.mkdir(parents=True)
             Image.new("RGB", (100, 100), (30, 180, 40)).save(class_dir / "img.jpg")
 
-            records = annotate(input_dir=input_dir, output_dir=output_dir, train_ratio=0.0, seed=42)
+            records = annotate(input_dir=input_dir, output_dir=output_dir)
 
-            train_images = list((output_dir / "train").glob("*.jpg"))
-            val_images = list((output_dir / "val").glob("*.jpg"))
-            self.assertEqual(len(train_images), 0)
-            self.assertEqual(len(val_images), 1)
+            self.assertFalse((output_dir / "train").exists())
+            self.assertFalse((output_dir / "val").exists())
+            output_images = list((output_dir / "healthy").glob("*.jpg"))
+            self.assertEqual(len(output_images), 1)
 
     def test_annotate_with_multiple_workers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -211,14 +202,12 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             records = annotate(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                train_ratio=1.0,
                 exg_threshold=0.1,
-                seed=42,
                 workers=2,
             )
 
             self.assertEqual(len(records), 3)
-            self.assertEqual(len(list((output_dir / "train").glob("*.json"))), 3)
+            self.assertEqual(len(list((output_dir / "healthy").glob("*.json"))), 3)
 
     def test_annotate_writes_multiple_instance_polygons(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -237,16 +226,14 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             annotate(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                train_ratio=0.0,
                 exg_threshold=0.1,
                 close_kernel_ratio=0.0,
                 open_kernel_ratio=0.0,
                 min_area_ratio=0.001,
                 max_instances=0,
-                seed=42,
             )
 
-            data = json.loads((output_dir / "val" / "multi.json").read_text(encoding="utf-8"))
+            data = json.loads((output_dir / "healthy" / "multi.json").read_text(encoding="utf-8"))
             self.assertEqual(len(data["shapes"]), 4)
             self.assertEqual(
                 [shape["shape_type"] for shape in data["shapes"]],
@@ -255,7 +242,7 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertTrue(all(shape["label"] == "healthy" for shape in data["shapes"]))
 
     def test_annotate_xanylabeling_output(self):
-        """X-AnyLabeling mode writes image/json pairs under train and val."""
+        """X-AnyLabeling mode writes image/json pairs under mirrored input directories."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             input_dir = tmpdir / "raw_data"
@@ -269,14 +256,13 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             records = annotate(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                train_ratio=0.5,
                 exg_threshold=0.1,
-                seed=1,
             )
 
             self.assertEqual(len(records), 2)
-            self.assertTrue((output_dir / "train").is_dir())
-            self.assertTrue((output_dir / "val").is_dir())
+            self.assertTrue((output_dir / "healthy").is_dir())
+            self.assertFalse((output_dir / "train").exists())
+            self.assertFalse((output_dir / "val").exists())
             self.assertFalse((output_dir / "images").exists())
             self.assertFalse((output_dir / "labels").exists())
             self.assertFalse((output_dir / "dataset.yaml").exists())
@@ -287,11 +273,12 @@ class RGBYoloAnnotateTests(unittest.TestCase):
             self.assertEqual(len(json_paths), 2)
             self.assertEqual(len(image_paths), 2)
 
-            data = json.loads(json_paths[0].read_text(encoding="utf-8"))
+            healthy_json = output_dir / "healthy" / "healthy_01.json"
+            data = json.loads(healthy_json.read_text(encoding="utf-8"))
             self.assertEqual(data["version"], "4.0.0-beta.7")
             self.assertEqual(data["imageHeight"], 80)
             self.assertEqual(data["imageWidth"], 100)
-            self.assertEqual(data["imagePath"], json_paths[0].with_suffix(".jpg").name)
+            self.assertEqual(data["imagePath"], healthy_json.with_suffix(".jpg").name)
             self.assertEqual(len(data["shapes"]), 2)
             polygon_shape = data["shapes"][0]
             rectangle_shape = data["shapes"][1]

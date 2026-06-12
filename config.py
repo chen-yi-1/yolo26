@@ -13,7 +13,7 @@ DATA = {
 
 MODEL_PATHS = {
     "segment": "model_data/yolo26n-seg.pt",
-    "detect": "model_data/yolo26n.pt",
+    "detect": r"C:\Users\EDY\Desktop\yolo26\best.pt",
 }
 
 TRAIN = {

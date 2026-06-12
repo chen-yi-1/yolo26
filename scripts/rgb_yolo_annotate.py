@@ -8,7 +8,7 @@ Assumes one seedling per image (one pot, large in frame).
 - Label: every generated shape is marked as healthy for manual review/editing
 
 Input:  raw_data/        directory of seedling images
-Output: dataset/         X-AnyLabeling dataset (train/ and val/ image+json pairs)
+Output: dataset/         X-AnyLabeling dataset mirroring input folders with image+json pairs
 
 Usage:
     python scripts/rgb_yolo_annotate.py --input raw_data --output dataset
@@ -17,7 +17,6 @@ Usage:
 import argparse
 import concurrent.futures
 import json
-import random
 import shutil
 from pathlib import Path
 
@@ -525,6 +524,15 @@ def class_id_for_image(image_path, input_dir, class_names):
     return 0
 
 
+def relative_output_dir(image_path, input_dir):
+    """Return the output subdirectory matching image_path's input parent."""
+    try:
+        relative_parent = Path(image_path).relative_to(input_dir).parent
+    except ValueError:
+        return Path()
+    return Path() if str(relative_parent) == "." else relative_parent
+
+
 # ---------------------------------------------------------------------------
 # X-AnyLabeling output
 # ---------------------------------------------------------------------------
@@ -655,7 +663,6 @@ def _analyze_image(task):
 def annotate(
     input_dir,
     output_dir,
-    train_ratio=0.8,
     exg_threshold=0.1,
     min_saturation=0.08,
     min_value=0.04,
@@ -669,7 +676,6 @@ def annotate(
     max_polygon_points=DEFAULT_MAX_POLYGON_POINTS,
     max_instances=DEFAULT_MAX_INSTANCES,
     recursive=False,
-    seed=42,
     workers=1,
 ):
     """Run the full annotation pipeline.
@@ -677,7 +683,6 @@ def annotate(
     Args:
         input_dir: directory of seedling images.
         output_dir: directory for X-AnyLabeling image/json pairs.
-        train_ratio: fraction of images for training (rest for val).
         exg_threshold: ExG threshold for vegetation mask.
         min_saturation: minimum HSV saturation for vegetation pixels.
         min_value: minimum HSV value for vegetation pixels.
@@ -691,7 +696,6 @@ def annotate(
         max_polygon_points: target upper bound for polygon vertices.
         max_instances: max polygons per image by area; 0 means no limit.
         recursive: whether to search input_dir recursively.
-        seed: random seed for reproducible train/val split.
         workers: number of worker processes for image analysis; 1 disables multiprocessing.
 
     Returns:
@@ -758,29 +762,16 @@ def annotate(
     if not records:
         raise ValueError("No images could be processed")
 
-    # ---- 3. Train/val split ----
-    rng = random.Random(seed)
-    indices = list(range(len(records)))
-    rng.shuffle(indices)
-    n_train = int(len(records) * train_ratio)
-    if n_train == 0 and train_ratio > 0:
-        n_train = 1  # ensure at least 1 training image when split is requested
-    train_indices = set(indices[:n_train])
-
-    for i, rec in enumerate(records):
-        rec["split"] = "train" if i in train_indices else "val"
-
     # ---- 4. Write output ----
-    # dataset/{train,val}/ with image + JSON pairs, plus dataset/classes.txt
+    # Mirror input folders under output_dir with image + JSON pairs, plus dataset/classes.txt
 
-    train_count = 0
-    val_count = 0
+    written_count = 0
     no_polygon_count = 0
 
     for rec in tqdm(records, desc="Writing annotations", unit="image"):
-        split = rec["split"]
-        img_dst = output_dir / split / f"{rec['stem']}{rec['suffix']}"
-        label_dst = output_dir / split / f"{rec['stem']}.json"
+        output_subdir = relative_output_dir(rec["image_path"], input_dir)
+        img_dst = output_dir / output_subdir / f"{rec['stem']}{rec['suffix']}"
+        label_dst = output_dir / output_subdir / f"{rec['stem']}.json"
 
         img_dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -796,16 +787,13 @@ def annotate(
         if not rec["instances"]:
             no_polygon_count += 1
 
-        if split == "train":
-            train_count += 1
-        else:
-            val_count += 1
+        written_count += 1
 
     # ---- 5. Generate classes.txt ----
     write_classes_txt(output_dir, class_names)
 
     # ---- 6. Summary ----
-    print(f"\nDone: {train_count} train + {val_count} val images -> {output_dir}")
+    print(f"\nDone: {written_count} images -> {output_dir}")
     if no_polygon_count:
         print(f"  {no_polygon_count} images had no vegetation polygon (empty labels)")
 
@@ -845,12 +833,6 @@ def parse_args():
         "--output",
         default="dataset",
         help="Output X-AnyLabeling dataset directory (default: dataset).",
-    )
-    parser.add_argument(
-        "--train-ratio",
-        type=float,
-        default=0.8,
-        help="Fraction of images for training split (default: 0.8).",
     )
     parser.add_argument(
         "--exg-threshold",
@@ -930,12 +912,6 @@ def parse_args():
         help="Search input directory recursively.",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for train/val split (default: 42).",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=4,
@@ -949,7 +925,6 @@ def main():
     annotate(
         input_dir=args.input,
         output_dir=args.output,
-        train_ratio=args.train_ratio,
         exg_threshold=args.exg_threshold,
         min_saturation=args.min_saturation,
         min_value=args.min_value,
@@ -963,7 +938,6 @@ def main():
         max_polygon_points=args.max_polygon_points,
         max_instances=args.max_instances,
         recursive=args.recursive,
-        seed=args.seed,
         workers=args.workers,
     )
 

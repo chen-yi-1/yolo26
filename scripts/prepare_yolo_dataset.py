@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Prepare an Ultralytics YOLO dataset from edited labels.
+"""Prepare an Ultralytics YOLO dataset from `dataset/labels/*.txt` sources.
 
-Supported sources:
-- dataset/labels/<stem>.txt with existing YOLO labels.
-- dataset/{train,val}/<stem>.json from X-AnyLabeling/Labelme.
+Input layout:
+    dataset/labels/<image_name>.txt
+    dataset/<class-or-folder>/<image_name>.jpg
+    dataset/<class-or-folder>/<image_name>.json
 
-For task="segment", polygon shapes become YOLO segmentation rows:
-    class_id x1 y1 x2 y2 x3 y3 ...
+This script uses the `labels/` files as the authoritative annotation source,
+finds the matching image by filename, optionally samples a percentage of the
+full set, splits into train/val, and writes:
+    datasets/images/train|val/<image_name>.<ext>
+    datasets/labels/train|val/<image_name>.txt
+    datasets/datasets.yaml
 
-For task="detect", rectangle shapes become YOLO detection rows:
-    class_id x_center y_center width height
+The json files are left in the source tree untouched for visualization/editing.
 """
 
 import argparse
-import json
 import random
 import shutil
 from pathlib import Path
@@ -24,29 +27,41 @@ import yaml
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
-def discover_images(split_dir):
-    split_dir = Path(split_dir)
-    if not split_dir.exists():
+def discover_image_files(source_dir):
+    source_dir = Path(source_dir)
+    if not source_dir.exists():
         return []
     return [
-        path for path in sorted(split_dir.iterdir())
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        path for path in sorted(source_dir.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_EXTENSIONS
+        and "labels" not in path.relative_to(source_dir).parts
+    ]
+
+
+def discover_label_files(labels_dir):
+    labels_dir = Path(labels_dir)
+    if not labels_dir.exists():
+        return []
+    return [
+        path for path in sorted(labels_dir.glob("*.txt"))
+        if path.is_file()
     ]
 
 
 def read_classes(classes_path):
     classes_path = Path(classes_path)
-    if not classes_path.exists():
-        raise FileNotFoundError(f"Missing classes file: {classes_path}")
+    if classes_path.exists():
+        names = [
+            line.strip()
+            for line in classes_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if not names:
+            raise ValueError(f"No class names found in {classes_path}")
+        return names
 
-    names = [
-        line.strip()
-        for line in classes_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    if not names:
-        raise ValueError(f"No class names found in {classes_path}")
-    return names
+    return None
 
 
 def validate_class_id(raw_class_id, class_count, label_path, line_number):
@@ -125,60 +140,6 @@ def clamp01(value):
     return min(1.0, max(0.0, value))
 
 
-def class_id_from_shape(shape, names, json_path):
-    label = shape.get("label")
-    if label not in names:
-        raise ValueError(f"{json_path}: unknown label {label!r}; expected one of {names}")
-    return names.index(label)
-
-
-def shape_to_yolo_row(shape, names, image_width, image_height, task, json_path):
-    shape_type = shape.get("shape_type")
-    points = shape.get("points") or []
-    class_id = class_id_from_shape(shape, names, json_path)
-
-    if task == "segment":
-        if shape_type != "polygon" or len(points) < 3:
-            return None
-        coords = []
-        for x, y in points:
-            coords.extend([clamp01(float(x) / image_width), clamp01(float(y) / image_height)])
-        return " ".join([str(class_id)] + [f"{coord:.6f}" for coord in coords])
-
-    if task == "detect":
-        if shape_type != "rectangle" or len(points) < 2:
-            return None
-        xs = [float(point[0]) for point in points]
-        ys = [float(point[1]) for point in points]
-        x_min, x_max = min(xs), max(xs)
-        y_min, y_max = min(ys), max(ys)
-        coords = [
-            ((x_min + x_max) / 2.0) / image_width,
-            ((y_min + y_max) / 2.0) / image_height,
-            (x_max - x_min) / image_width,
-            (y_max - y_min) / image_height,
-        ]
-        return " ".join([str(class_id)] + [f"{clamp01(coord):.6f}" for coord in coords])
-
-    raise ValueError(f"Unsupported task: {task}")
-
-
-def write_label_from_json(json_path, label_dst, names, task):
-    data = json.loads(Path(json_path).read_text(encoding="utf-8"))
-    image_width = data.get("imageWidth")
-    image_height = data.get("imageHeight")
-    if not image_width or not image_height:
-        raise ValueError(f"{json_path}: missing imageWidth/imageHeight")
-
-    rows = []
-    for shape in data.get("shapes", []):
-        row = shape_to_yolo_row(shape, names, image_width, image_height, task, json_path)
-        if row is not None:
-            rows.append(row)
-
-    label_dst.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
-
-
 def reset_output_dir(output_dir):
     output_dir = Path(output_dir)
     if output_dir.exists():
@@ -188,72 +149,60 @@ def reset_output_dir(output_dir):
         (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
 
-def find_image_for_label(images_dir, image_stem):
-    for ext in IMAGE_EXTENSIONS:
-        candidate = images_dir / f"{image_stem}{ext}"
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def sample_items(items, sample_percent, split):
+def sample_items(items, sample_percent, split, seed):
     if sample_percent is None or sample_percent <= 0 or sample_percent >= 100:
         return items
     sample_size = max(1, int(len(items) * sample_percent / 100))
-    sampled = random.sample(items, sample_size)
+    sampled = random.Random(seed).sample(items, sample_size)
     print(f"  Sampling {sample_percent}% ({sample_size}/{len(items)}) from {split}")
     return sampled
 
 
-def copy_split_from_txt(source_dir, labels_dir, output_dir, split, names, task, sample_percent=None):
-    images_dir = Path(source_dir) / split
-    label_files = sample_items(sorted(Path(labels_dir).glob("*.txt")), sample_percent, split)
+def split_items(items, train_ratio, seed):
+    shuffled = list(items)
+    random.Random(seed).shuffle(shuffled)
+    n_train = int(len(shuffled) * train_ratio)
+    if n_train == 0 and train_ratio > 0 and shuffled:
+        n_train = 1
+    return shuffled[:n_train], shuffled[n_train:]
+
+
+def build_image_index(image_files):
+    index = {}
+    duplicates = {}
+    for image_path in image_files:
+        stem = image_path.stem
+        if stem in index:
+            duplicates.setdefault(stem, [index[stem]]).append(image_path)
+        else:
+            index[stem] = image_path
+    if duplicates:
+        dup_list = ", ".join(sorted(duplicates.keys())[:10])
+        raise ValueError(f"Duplicate image stems found; cannot match labels uniquely: {dup_list}")
+    return index
+
+
+def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed, sample_percent=None):
+    label_files = sample_items(label_files, sample_percent, split, seed)
     copied = 0
     missing_images = []
 
     for label_src in label_files:
-        image_path = find_image_for_label(images_dir, label_src.stem)
         validate_yolo_label(label_src, len(names), task)
-
-        if image_path is None:
+        image_src = image_index.get(label_src.stem)
+        if image_src is None:
             missing_images.append(label_src.stem)
             continue
 
-        image_dst = Path(output_dir) / "images" / split / image_path.name
+        image_dst = Path(output_dir) / "images" / split / image_src.name
         label_dst = Path(output_dir) / "labels" / split / label_src.name
-        shutil.copy2(image_path, image_dst)
+        image_dst.parent.mkdir(parents=True, exist_ok=True)
+        label_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(image_src, image_dst)
         shutil.copy2(label_src, label_dst)
         copied += 1
 
     return copied, missing_images
-
-
-def copy_split_from_json(source_dir, output_dir, split, names, task, sample_percent=None):
-    image_paths = sample_items(discover_images(Path(source_dir) / split), sample_percent, split)
-    copied = 0
-    missing_labels = []
-
-    for image_path in image_paths:
-        json_src = image_path.with_suffix(".json")
-        if not json_src.exists():
-            missing_labels.append(image_path.stem)
-            continue
-
-        image_dst = Path(output_dir) / "images" / split / image_path.name
-        label_dst = Path(output_dir) / "labels" / split / f"{image_path.stem}.txt"
-        shutil.copy2(image_path, image_dst)
-        write_label_from_json(json_src, label_dst, names, task)
-        validate_yolo_label(label_dst, len(names), task)
-        copied += 1
-
-    return copied, missing_labels
-
-
-def copy_split(source_dir, labels_dir, output_dir, split, names, task, sample_percent=None):
-    labels_dir = Path(labels_dir)
-    if labels_dir.exists() and any(labels_dir.glob("*.txt")):
-        return copy_split_from_txt(source_dir, labels_dir, output_dir, split, names, task, sample_percent)
-    return copy_split_from_json(source_dir, output_dir, split, names, task, sample_percent)
 
 
 def write_dataset_yaml(yaml_path, output_dir, names):
@@ -270,30 +219,60 @@ def write_dataset_yaml(yaml_path, output_dir, names):
     )
 
 
-def prepare_yolo_dataset(source_dir, output_dir, yaml_path=None, sample_percent=None, task="segment"):
+def prepare_yolo_dataset(
+    source_dir,
+    output_dir,
+    yaml_path=None,
+    sample_percent=None,
+    task="segment",
+    train_ratio=0.8,
+    seed=42,
+):
     source_dir = Path(source_dir)
     output_dir = Path(output_dir)
     if yaml_path is None:
         yaml_path = output_dir / "datasets.yaml"
-    labels_dir = source_dir / "labels"
 
     if not source_dir.exists():
         raise FileNotFoundError(f"Source dataset does not exist: {source_dir}")
     if task not in {"segment", "detect"}:
         raise ValueError(f"task must be 'segment' or 'detect', got: {task}")
+    if train_ratio < 0.0 or train_ratio > 1.0:
+        raise ValueError(f"train_ratio must be between 0 and 1, got: {train_ratio}")
+
+    labels_dir = source_dir / "labels"
+    if not labels_dir.exists():
+        raise FileNotFoundError(f"Missing labels directory: {labels_dir}")
 
     names = read_classes(source_dir / "classes.txt")
+    if names is None:
+        class_dirs = [p for p in sorted(source_dir.iterdir()) if p.is_dir() and p.name != "labels"]
+        if not class_dirs:
+            raise FileNotFoundError(f"Missing classes file and class folders: {source_dir}")
+        names = [path.name for path in class_dirs]
+
+    label_files = discover_label_files(labels_dir)
+    if not label_files:
+        raise ValueError(f"No label files found in {labels_dir}")
+
+    image_index = build_image_index(discover_image_files(source_dir))
     reset_output_dir(output_dir)
 
-    train_count, train_missing = copy_split(source_dir, labels_dir, output_dir, "train", names, task, sample_percent)
-    val_count, val_missing = copy_split(source_dir, labels_dir, output_dir, "val", names, task, sample_percent)
+    sampled_labels = sample_items(label_files, sample_percent, "all", seed)
+    train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
+    train_count, train_missing = copy_labelled_items(
+        source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed
+    )
+    val_count, val_missing = copy_labelled_items(
+        source_dir, labels_dir, output_dir, "val", val_labels, image_index, names, task, seed
+    )
+    missing = train_missing + val_missing
     write_dataset_yaml(yaml_path, output_dir, names)
 
     print(f"Prepared YOLO {task} dataset: {output_dir}")
     print(f"  train: {train_count} images (with labels)")
     print(f"  val:   {val_count} images (with labels)")
     print(f"  yaml:  {yaml_path}")
-    missing = train_missing + val_missing
     if missing:
         print(f"  warning: {len(missing)} items have no matching image/json, skipped:")
         for stem in missing[:10]:
@@ -312,7 +291,7 @@ def prepare_yolo_dataset(source_dir, output_dir, yaml_path=None, sample_percent=
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Convert edited dataset/train,val into an Ultralytics YOLO layout."
+        description="Convert edited X-AnyLabeling/YOLO labels into an Ultralytics YOLO layout."
     )
     parser.add_argument("--source", default="dataset", help="Edited dataset directory (default: dataset).")
     parser.add_argument("--output", default="datasets", help="Output YOLO dataset directory (default: datasets).")
@@ -325,7 +304,19 @@ def parse_args():
         "--sample",
         type=float,
         default=None,
-        help="Random sample percentage (0-100) from train and val sets. E.g., --sample 10 for 10%%.",
+        help="Random sample percentage (0-100) from labels/*.txt. E.g., --sample 10 for 10%%.",
+    )
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=0.8,
+        help="Train split ratio for mirrored X-AnyLabeling sources without train/val folders (default: 0.8).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for mirrored-source train/val split (default: 42).",
     )
     parser.add_argument(
         "--task",
@@ -338,7 +329,15 @@ def parse_args():
 
 def main():
     args = parse_args()
-    prepare_yolo_dataset(args.source, args.output, args.yaml, args.sample, task=args.task)
+    prepare_yolo_dataset(
+        args.source,
+        args.output,
+        args.yaml,
+        args.sample,
+        task=args.task,
+        train_ratio=args.train_ratio,
+        seed=args.seed,
+    )
 
 
 if __name__ == "__main__":
