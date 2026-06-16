@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,49 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(freeze_name, "train_20260608_010203_freeze")
         self.assertEqual(unfreeze_name, "train_20260608_010203_unfreeze")
+
+    def test_resume_checkpoint_prefers_phase_last_in_latest_run(self):
+        from train import find_latest_resume_checkpoint
+
+        dirs = ["old_unfreeze", "new_freeze"]
+        files = {
+            os.path.normpath("runs/segment/logs/old_unfreeze/weights/last.pt"),
+            os.path.normpath("runs/segment/logs/new_freeze/weights/last.pt"),
+            os.path.normpath("runs/segment/logs/new_freeze/weights/phase_last.pt"),
+        }
+        mtimes = {
+            os.path.normpath("runs/segment/logs/old_unfreeze/weights/last.pt"): 10,
+            os.path.normpath("runs/segment/logs/new_freeze/weights/last.pt"): 20,
+            os.path.normpath("runs/segment/logs/new_freeze/weights/phase_last.pt"): 19,
+        }
+
+        with patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=dirs), \
+             patch("os.path.isfile", side_effect=lambda path: os.path.normpath(path) in files), \
+             patch("os.path.getmtime", side_effect=lambda path: mtimes[os.path.normpath(path)]):
+            self.assertEqual(
+                os.path.normpath(find_latest_resume_checkpoint("runs/segment/logs")),
+                os.path.normpath("runs/segment/logs/new_freeze/weights/phase_last.pt"),
+            )
+
+    def test_phase2_from_completed_freeze_loads_weights_without_resume(self):
+        from train import phase2_checkpoint
+
+        checkpoint, resume = phase2_checkpoint(
+            freeze_save_dir=None,
+            model_path="runs/segment/logs/train_20260608_010203_freeze/weights/phase_last.pt",
+            is_resuming=True,
+            train_name="train_20260608_010203_freeze",
+            init_epoch=50,
+            freeze_epoch=50,
+            freeze_train=True,
+        )
+
+        self.assertEqual(
+            checkpoint,
+            "runs/segment/logs/train_20260608_010203_freeze/weights/phase_last.pt",
+        )
+        self.assertFalse(resume)
 
     def test_phase2_epochs_are_remaining_not_total(self):
         from train import phase2_epochs

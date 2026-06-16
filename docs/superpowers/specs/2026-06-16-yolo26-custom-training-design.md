@@ -52,7 +52,7 @@ yolo26/
 
 ### 删除的文件
 
-- `config.py` — 全部删除，配置归入 `train.py`
+- `config.py` — 全部删除，配置归入 `train.py`和 `yolo.py`等其他相关文件
 - `tests/test_helpers.py` — 如引用了 config，需要适配
 
 ## 4. 模块设计
