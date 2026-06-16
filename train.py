@@ -380,7 +380,7 @@ if __name__ == "__main__":
         batch=Unfreeze_batch_size,
         data=ydata,
         mode='val',
-        rect=True,
+        rect=False,
         stride=model_stride,
     )
 
@@ -542,7 +542,7 @@ if __name__ == "__main__":
                      num_workers=num_workers, pin_memory=True, drop_last=True,
                      collate_fn=getattr(train_dataset, 'collate_fn', None),
                      worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
-    gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size,
+    gen_val = DataLoader(val_dataset, shuffle=False, batch_size=batch_size,
                          num_workers=num_workers, pin_memory=True, drop_last=True,
                          collate_fn=getattr(val_dataset, 'collate_fn', None),
                          worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
@@ -637,7 +637,7 @@ if __name__ == "__main__":
                              num_workers=num_workers, pin_memory=True, drop_last=True,
                              collate_fn=getattr(train_dataset, 'collate_fn', None),
                              worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
-            gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size,
+            gen_val = DataLoader(val_dataset, shuffle=False, batch_size=batch_size,
                                  num_workers=num_workers, pin_memory=True, drop_last=True,
                                  collate_fn=getattr(val_dataset, 'collate_fn', None),
                                  worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
