@@ -24,8 +24,14 @@ def torch_load_weights_only_false():
 
 
 def phase_train_names(train_name, is_resuming):
+    def base_name(name):
+        for suffix in ("_freeze", "_unfreeze"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
     if is_resuming:
-        return train_name, train_name
+        return train_name, f"{base_name(train_name)}_unfreeze"
     return f"{train_name}_freeze", f"{train_name}_unfreeze"
 
 
@@ -115,8 +121,7 @@ if __name__ == "__main__":
     #   data_yaml        YOLO格式的数据集配置文件路径
     #                    文件中应包含 train/val 路径 和 names 类别名
     #---------------------------------------------------------------------#
-    # data_yaml       = DATA["yaml"]
-    # prepare_yolo_dataset(source_dir=DATA["source"], output_dir=DATA["output"], yaml_path=data_yaml, task=task)
+    data_yaml       = DATA["yaml"]
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -271,6 +276,18 @@ if __name__ == "__main__":
         model_path = ckpt_paths[-1]
         with torch_load_weights_only_false():
             ckpt = torch.load(model_path, map_location='cpu')
+        # checkpoint 中 project/resume 字段可能含完整路径导致目录重复，统一修正
+        if 'train_args' in ckpt:
+            args = ckpt['train_args']
+            changed = False
+            if args.get('project') != save_dir:
+                args['project'] = save_dir
+                changed = True
+            if isinstance(args.get('resume'), str):
+                args['resume'] = True
+                changed = True
+            if changed:
+                torch.save(ckpt, model_path)
         ckpt_epoch = ckpt.get('epoch', None)
         if ckpt_epoch is None:
             raise RuntimeError(
@@ -287,7 +304,10 @@ if __name__ == "__main__":
             print(f"       from epoch {actual_init+1} per checkpoint state.")
 
         # 从 checkpoint 路径反推 train_name，续训结果写回原目录
+        # 确保 train_name 只包含目录名，不包含路径前缀
         train_name = os.path.basename(os.path.dirname(os.path.dirname(model_path)))
+        # 防止 train_name 包含路径分隔符导致路径重复
+        train_name = os.path.basename(train_name) if os.sep in train_name else train_name
         print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
         print(f"  {model_path}")
         print(f"  Results will be saved to: runs/{run_task}/{save_dir}/{train_name}/")
@@ -354,7 +374,7 @@ if __name__ == "__main__":
         dfl=1.5,
         amp=fp16,
         seed=seed,
-        project=os.path.join('runs', run_task, save_dir),
+        project=save_dir,
         exist_ok=True,
         save_period=save_period,
         val=eval_flag,

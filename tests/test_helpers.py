@@ -35,12 +35,20 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(freeze_name, "train_20260608_010203_freeze")
         self.assertEqual(unfreeze_name, "train_20260608_010203_unfreeze")
 
-    def test_resume_phase_names_reuse_checkpoint_run(self):
+    def test_resume_phase_names_keep_freeze_and_split_unfreeze(self):
         from train import phase_train_names
 
         freeze_name, unfreeze_name = phase_train_names("train_20260608_010203_unfreeze", True)
 
         self.assertEqual(freeze_name, "train_20260608_010203_unfreeze")
+        self.assertEqual(unfreeze_name, "train_20260608_010203_unfreeze")
+
+    def test_resume_phase_names_advance_from_freeze_to_unfreeze(self):
+        from train import phase_train_names
+
+        freeze_name, unfreeze_name = phase_train_names("train_20260608_010203_freeze", True)
+
+        self.assertEqual(freeze_name, "train_20260608_010203_freeze")
         self.assertEqual(unfreeze_name, "train_20260608_010203_unfreeze")
 
     def test_phase2_epochs_are_remaining_not_total(self):

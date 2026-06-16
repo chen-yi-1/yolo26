@@ -158,6 +158,30 @@ def sample_items(items, sample_percent, split, seed):
     return sampled
 
 
+def sample_items_fixed_count(label_files, sample_count, split, seed):
+    """Sample fixed count per class - useful for imbalanced datasets."""
+    if sample_count is None or sample_count <= 0:
+        return label_files
+
+    # Group label files by their class ID
+    class_groups = {}
+    for label_file in label_files:
+        class_id = get_label_class_id(label_file)
+        if class_id is not None:
+            class_groups.setdefault(class_id, []).append(label_file)
+
+    # Sample fixed count from each class
+    sampled = []
+    for class_id, items in class_groups.items():
+        actual_count = min(sample_count, len(items))
+        class_sampled = random.Random(seed + class_id).sample(items, actual_count)
+        sampled.extend(class_sampled)
+        print(f"  Sampling class {class_id}: {actual_count}/{len(items)} (requested: {sample_count})")
+
+    print(f"  Total sampled from {split}: {len(sampled)}/{len(label_files)}")
+    return sampled
+
+
 def split_items(items, train_ratio, seed):
     shuffled = list(items)
     random.Random(seed).shuffle(shuffled)
@@ -168,28 +192,57 @@ def split_items(items, train_ratio, seed):
 
 
 def build_image_index(image_files):
+    """Build index mapping stem to list of image paths (handles duplicates across classes)."""
     index = {}
-    duplicates = {}
     for image_path in image_files:
         stem = image_path.stem
-        if stem in index:
-            duplicates.setdefault(stem, [index[stem]]).append(image_path)
-        else:
-            index[stem] = image_path
-    if duplicates:
-        dup_list = ", ".join(sorted(duplicates.keys())[:10])
-        raise ValueError(f"Duplicate image stems found; cannot match labels uniquely: {dup_list}")
+        if stem not in index:
+            index[stem] = []
+        index[stem].append(image_path)
     return index
 
 
-def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed, sample_percent=None):
-    label_files = sample_items(label_files, sample_percent, split, seed)
+def get_label_class_id(label_path):
+    """Extract the class ID from the first line of a YOLO label file."""
+    try:
+        with open(label_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    parts = line.split()
+                    if parts:
+                        return int(parts[0])
+    except Exception:
+        pass
+    return None
+
+
+def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed):
     copied = 0
     missing_images = []
 
     for label_src in label_files:
         validate_yolo_label(label_src, len(names), task)
-        image_src = image_index.get(label_src.stem)
+        
+        # Get class ID from label file
+        class_id = get_label_class_id(label_src)
+        
+        # Find matching image
+        image_candidates = image_index.get(label_src.stem, [])
+        image_src = None
+        
+        if len(image_candidates) == 1:
+            # Only one candidate, use it
+            image_src = image_candidates[0]
+        elif len(image_candidates) > 1:
+            # Multiple candidates, choose by class
+            if class_id is not None and class_id < len(names):
+                class_name = names[class_id]
+                for candidate in image_candidates:
+                    if class_name in str(candidate.parent):
+                        image_src = candidate
+                        break
+        
         if image_src is None:
             missing_images.append(label_src.stem)
             continue
@@ -223,7 +276,7 @@ def prepare_yolo_dataset(
     source_dir,
     output_dir,
     yaml_path=None,
-    sample_percent=None,
+    sample_count=None,
     task="segment",
     train_ratio=0.8,
     seed=42,
@@ -258,7 +311,7 @@ def prepare_yolo_dataset(
     image_index = build_image_index(discover_image_files(source_dir))
     reset_output_dir(output_dir)
 
-    sampled_labels = sample_items(label_files, sample_percent, "all", seed)
+    sampled_labels = sample_items_fixed_count(label_files, sample_count, "all", seed)
     train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
     train_count, train_missing = copy_labelled_items(
         source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed
@@ -301,10 +354,10 @@ def parse_args():
         help="Output dataset YAML path (default: <output>/datasets.yaml).",
     )
     parser.add_argument(
-        "--sample",
-        type=float,
-        default=None,
-        help="Random sample percentage (0-100) from labels/*.txt. E.g., --sample 10 for 10%%.",
+        "--sample-count",
+        type=int,
+        default=200,
+        help="Fixed number of samples per class. Useful for imbalanced datasets. E.g., --sample-count 500 means 500 samples from each class.",
     )
     parser.add_argument(
         "--train-ratio",
@@ -333,7 +386,7 @@ def main():
         args.source,
         args.output,
         args.yaml,
-        args.sample,
+        sample_count=args.sample_count,
         task=args.task,
         train_ratio=args.train_ratio,
         seed=args.seed,

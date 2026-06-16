@@ -13,7 +13,7 @@ DATA = {
 
 MODEL_PATHS = {
     "segment": "model_data/yolo26n-seg.pt",
-    "detect": r"C:\Users\EDY\Desktop\yolo26\best.pt",
+    "detect": r"C:\Users\EDY\Desktop\yolo26\model_data\yolo26x.pt",
 }
 
 TRAIN = {
@@ -22,8 +22,8 @@ TRAIN = {
     "fp16": True,
     "input_shape": [640, 640],
     "init_epoch": 0,
-    "freeze_epoch": 5,
-    "unfreeze_epoch": 10,
+    "freeze_epoch": 50,
+    "unfreeze_epoch": 100,
     "freeze_train": True,
     "freeze_batch_size": 32,
     "unfreeze_batch_size": 16,
