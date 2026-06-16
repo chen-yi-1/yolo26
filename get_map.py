@@ -5,16 +5,6 @@ import torch
 from ultralytics import YOLO
 
 
-def default_model_path(task="segment"):
-    pattern = os.path.join("runs", task, "*", "weights", "best.pt")
-    candidates = glob.glob(pattern)
-    if candidates:
-        return max(candidates, key=os.path.getmtime)
-    if task == "detect":
-        return "model_data/yolo26n.pt"
-    return "model_data/yolo26n-seg.pt"
-
-
 if __name__ == "__main__":
     '''
     Recall和Precision不像AP是一个面积的概念，因此在门限值（Confidence）不同时，网络的Recall和Precision值是不同的。
@@ -28,7 +18,7 @@ if __name__ == "__main__":
     #   训练好后runs文件夹下存在多个权值文件，选择验证集损失较低的即可。
     #   验证集损失较低不代表mAP较高，仅代表该权值在验证集上泛化性能较好。
     #------------------------------------------------------------------------------------------------------------------#
-    model_path      = default_model_path("segment")
+    model_path      = "model_data/yolo26n.pt"
     #------------------------------------------------------------------------------------------------------------------#
     #   data_yaml用于指定数据集配置文件路径
     #   该文件需包含数据集路径、类别数、类别名称等信息
