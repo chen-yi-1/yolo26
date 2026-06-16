@@ -146,10 +146,14 @@ if __name__ == "__main__":
     Init_lr             = 1e-3
     Min_lr              = Init_lr * 0.01
     #------------------------------------------------------------------#
-    #   optimizer_type  使用到的优化器种类，可选的有adam、sgd
+    #   optimizer_type  使用到的优化器种类，可选的有adam、sgd、auto
     #                   当使用Adam优化器时建议设置  Init_lr=1e-3
     #                   当使用SGD优化器时建议设置   Init_lr=1e-2
+    #                   当使用auto时，根据总训练步长自动选择：
+    #                   >10000步使用SGD (lr=0.01, momentum=0.9)，否则AdamW
+    #                   (lr根据类别数自动计算, momentum=0.9)
     #   momentum        优化器内部使用到的momentum参数
+    #                   auto模式下momentum被自动覆盖
     #   weight_decay    权值衰减，可防止过拟合
     #                   adam会导致weight_decay错误，使用adam时建议设置为0。
     #------------------------------------------------------------------#
@@ -348,43 +352,89 @@ if __name__ == "__main__":
     #-------------------------------------------------------------------#
     #   判断当前batch_size，自适应调整学习率
     #-------------------------------------------------------------------#
-    nbs = 64
-    lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
-    lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
-    Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
-    Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+    nbs         = 64
+    nbs         = nbs if nbs >= batch_size else batch_size
+    epoch_step      = num_train // batch_size
+    epoch_step_val  = num_val // batch_size
+
+    if epoch_step == 0 or epoch_step_val == 0:
+        raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
+
+    #-------------------------------------------------------------------#
+    #   auto优化器选择 (参考 ultralytics 官方 build_optimizer)
+    #   根据总训练步数自动选择优化器和学习率
+    #   iterations > 10000 → SGD  (lr=0.01, momentum=0.9)
+    #   iterations <= 10000 → AdamW (lr=0.002 * 5 / (4 + nc), momentum=0.9)
+    #-------------------------------------------------------------------#
+    if optimizer_type == "auto":
+        iterations = epoch_step * UnFreeze_Epoch
+        nc = num_classes
+        lr_fit = round(0.002 * 5 / (4 + nc), 6)  # lr0 fit equation
+        if iterations > 10000:
+            optimizer_type_resolved = "SGD"
+            Init_lr_fit = 0.01
+            momentum    = 0.9
+        else:
+            optimizer_type_resolved = "AdamW"
+            Init_lr_fit = lr_fit
+            momentum    = 0.9
+        weight_decay = 0.0  # AdamW 不建议使用 weight_decay
+        print(f"\033[1;32m[Auto Optimizer] iterations={iterations} → "
+              f"optimizer={optimizer_type_resolved}, lr={Init_lr_fit}, momentum={momentum}\033[0m")
+    else:
+        optimizer_type_resolved = optimizer_type
+        lr_limit_max    = 1e-3 if optimizer_type == 'adam' else 5e-2
+        lr_limit_min    = 3e-4 if optimizer_type == 'adam' else 5e-4
+        Init_lr_fit     = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+        Min_lr_fit      = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+
+    # 大小写规范化: 'sgd' → 'SGD', 'adam' → 'Adam', etc.
+    _optim_map = {x.lower(): x for x in ("SGD", "Adam", "AdamW", "Adamax", "NAdam", "RAdam", "RMSProp")}
+    optimizer_type_resolved = _optim_map.get(optimizer_type_resolved.lower(), optimizer_type_resolved)
+
+    Min_lr_fit = Init_lr_fit * 0.01
+    if optimizer_type_resolved.lower() in ("adam", "adamw"):
+        weight_decay = 0.0
 
     #---------------------------------------#
     #   根据optimizer_type选择优化器
+    #   参考 ultralytics 官方 build_optimizer:
+    #   g[0]: weight (with weight_decay)
+    #   g[1]: BN weight (no weight_decay)
+    #   g[2]: bias (no weight_decay)
     #---------------------------------------#
-    pg0, pg1, pg2 = [], [], []
-    for k, v in model.named_modules():
-        if hasattr(v, "bias") and isinstance(v.bias, nn.Parameter):
-            pg2.append(v.bias)
-        if isinstance(v, nn.BatchNorm2d) or "bn" in k:
-            pg0.append(v.weight)
-        elif hasattr(v, "weight") and isinstance(v.weight, nn.Parameter):
-            pg1.append(v.weight)
-    optimizer = {
-        'adam': optim.Adam(pg0, Init_lr_fit, betas=(momentum, 0.999)),
-        'sgd': optim.SGD(pg0, Init_lr_fit, momentum=momentum, nesterov=True)
-    }[optimizer_type]
-    optimizer.add_param_group({"params": pg1, "weight_decay": weight_decay})
-    optimizer.add_param_group({"params": pg2})
+    bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)  # BatchNorm2d, etc.
+    g0, g1, g2 = [], [], []
+    for module_name, module in model.named_modules():
+        for param_name, param in module.named_parameters(recurse=False):
+            fullname = f"{module_name}.{param_name}" if module_name else param_name
+            if "bias" in fullname:
+                g2.append(param)  # bias (no decay)
+            elif isinstance(module, bn):
+                g1.append(param)  # BN weight (no decay)
+            elif hasattr(module, "weight") and isinstance(module.weight, nn.Parameter):
+                g0.append(param)  # weight (with decay)
+
+    optim_args = {"lr": Init_lr_fit, "momentum": momentum}
+    if optimizer_type_resolved in ("Adam", "AdamW", "Adamax", "NAdam", "RAdam"):
+        optim_args["betas"] = (momentum, 0.999)
+        optim_args["weight_decay"] = 0.0
+    elif optimizer_type_resolved in ("SGD", "MuSGD"):
+        optim_args["nesterov"] = True
+
+    optimizer = getattr(optim, optimizer_type_resolved)([
+        {"params": g0, "weight_decay": weight_decay, "param_group": "weight"},
+        {"params": g1, "weight_decay": 0.0, "param_group": "bn"},
+        {"params": g2, "weight_decay": 0.0, "param_group": "bias"},
+    ], **{k: v for k, v in optim_args.items() if k != "weight_decay"})
+
+    print(f"Optimizer: {type(optimizer).__name__}(lr={Init_lr_fit}, momentum={momentum}) "
+          f"weight(decay={weight_decay}), BN weight(decay=0.0), bias(decay=0.0)")
 
     #---------------------------------------#
     #   获得学习率下降的公式
     #---------------------------------------#
     lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
-
-    #---------------------------------------#
-    #   判断每一个世代的长度
-    #---------------------------------------#
-    epoch_step = num_train // batch_size
-    epoch_step_val = num_val // batch_size
-
-    if epoch_step == 0 or epoch_step_val == 0:
-        raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
 
     if ema:
         ema.updates = epoch_step * Init_Epoch
@@ -454,11 +504,24 @@ if __name__ == "__main__":
             #-------------------------------------------------------------------#
             #   判断当前batch_size，自适应调整学习率
             #-------------------------------------------------------------------#
-            nbs = 64
-            lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
-            lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
-            Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
-            Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+            if optimizer_type == "auto":
+                iterations = epoch_step * UnFreeze_Epoch
+                nc = num_classes
+                lr_fit = round(0.002 * 5 / (4 + nc), 6)
+                if iterations > 10000:
+                    Init_lr_fit = 0.01
+                else:
+                    Init_lr_fit = lr_fit
+                Min_lr_fit = Init_lr_fit * 0.01
+                print(f"\033[1;32m[Auto Optimizer Unfreeze] iterations={iterations} → "
+                      f"lr={Init_lr_fit}\033[0m")
+            else:
+                nbs = 64
+                nbs = nbs if nbs >= batch_size else batch_size
+                lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
+                lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
+                Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+                Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
             lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
 
             for param in model.backbone.parameters():
