@@ -3,6 +3,7 @@
 #-------------------------------------#
 import datetime
 import os
+from contextlib import contextmanager
 from functools import partial
 
 import numpy as np
@@ -20,6 +21,70 @@ from nets.yolo_training import (Loss, ModelEMA, get_lr_scheduler,
 from utils.callbacks import EvalCallback, LossHistory
 from utils.utils import (get_classes, seed_everything, show_config,
                          worker_init_fn)
+
+
+@contextmanager
+def torch_load_weights_only_false():
+    """Temporarily force torch.load(..., weights_only=False)."""
+    original_load = torch.load
+
+    def patched_load(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return original_load(*args, **kwargs)
+
+    torch.load = patched_load
+    try:
+        yield
+    finally:
+        torch.load = original_load
+
+
+def phase_train_names(train_name, is_resuming):
+    if is_resuming:
+        if train_name.endswith("_freeze"):
+            return train_name, train_name[:-len("_freeze")] + "_unfreeze"
+        return train_name, train_name
+    return train_name + "_freeze", train_name + "_unfreeze"
+
+
+def find_latest_resume_checkpoint(project_dir):
+    if not os.path.isdir(project_dir):
+        return None
+
+    candidates = []
+    for name in os.listdir(project_dir):
+        run_dir = os.path.join(project_dir, name)
+        if not os.path.isdir(run_dir):
+            continue
+        weights_dir = os.path.join(run_dir, "weights")
+        phase_last = os.path.join(weights_dir, "phase_last.pt")
+        last = os.path.join(weights_dir, "last.pt")
+        if os.path.isfile(phase_last):
+            candidates.append((os.path.getmtime(phase_last), phase_last))
+        elif os.path.isfile(last):
+            candidates.append((os.path.getmtime(last), last))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def phase2_checkpoint(freeze_save_dir, model_path, is_resuming, train_name, init_epoch, freeze_epoch, freeze_train):
+    if is_resuming and freeze_train and init_epoch >= freeze_epoch and train_name.endswith("_freeze"):
+        return model_path, False
+    if freeze_save_dir:
+        weights_dir = os.path.join(freeze_save_dir, "weights")
+        for filename in ("phase_last.pt", "last.pt", "best.pt"):
+            candidate = os.path.join(weights_dir, filename)
+            if os.path.isfile(candidate):
+                return candidate, False
+    return model_path, is_resuming
+
+
+def phase2_epochs(init_epoch, freeze_epoch, unfreeze_epoch, freeze_train):
+    if freeze_train:
+        return max(unfreeze_epoch - max(init_epoch, freeze_epoch), 0)
+    return max(unfreeze_epoch - init_epoch, 0)
 
 
 '''
@@ -43,7 +108,7 @@ if __name__ == "__main__":
     #   Cuda    是否使用Cuda
     #           没有GPU可以设置成False
     #---------------------------------#
-    Cuda            = True
+    Cuda            = False
     #----------------------------------------------#
     #   Seed    用于固定随机种子
     #           使得每次独立训练都可以获得一样的结果
@@ -78,7 +143,7 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolo26x.pt'
+    model_path      = 'model_data/yolo26n.pt'
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -118,7 +183,7 @@ if __name__ == "__main__":
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
     Init_Epoch          = 0
-    Freeze_Epoch        = 50
+    Freeze_Epoch        = 5
     Freeze_batch_size   = 32
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
@@ -128,7 +193,7 @@ if __name__ == "__main__":
     #                           YOLO26 小数据集推荐 100 epochs
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = 100
+    UnFreeze_Epoch      = 10
     Unfreeze_batch_size = 16
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
@@ -157,7 +222,7 @@ if __name__ == "__main__":
     #   weight_decay    权值衰减，可防止过拟合
     #                   adam会导致weight_decay错误，使用adam时建议设置为0。
     #------------------------------------------------------------------#
-    optimizer_type      = "sgd"
+    optimizer_type      = "auto"
     momentum            = 0.937
     weight_decay        = 5e-4
     #------------------------------------------------------------------#
@@ -217,7 +282,22 @@ if __name__ == "__main__":
     #   创建yolo模型
     #------------------------------------------------------#
     model = YOLO(model_path).model
-    model.nc = num_classes  # override num_classes for custom dataset
+
+    # 替换分类头以匹配自定义数据集的类别数
+    if num_classes != model.nc:
+        import torch.nn as nn
+        head = model.model[-1]
+        head.nc = num_classes
+        head.no = num_classes + head.reg_max * 4
+        model.nc = num_classes
+        # yolo26 end2end 双头: one2many + one2one, 各有 cls_head ModuleList
+        for branch_name in ('one2many', 'one2one'):
+            branch = getattr(head, branch_name, None)
+            if branch is not None and 'cls_head' in branch:
+                for i, cls_seq in enumerate(branch['cls_head']):
+                    # cls_seq: Sequential(Sequential, Sequential, Conv2d)
+                    in_channels = cls_seq[-1].in_channels
+                    cls_seq[-1] = nn.Conv2d(in_channels, num_classes, 1)
 
     if Init_Epoch > 0:
         # 断点续训: 用户手动设置 model_path 指向 last_epoch_weights.pth
@@ -244,8 +324,8 @@ if __name__ == "__main__":
     #   因此torch1.2这里显示"could not be resolve"
     #------------------------------------------------------------------#
     if fp16:
-        from torch.cuda.amp import GradScaler
-        scaler = GradScaler()
+        from torch.amp import GradScaler
+        scaler = GradScaler('cuda')
     else:
         scaler = None
 
@@ -261,36 +341,47 @@ if __name__ == "__main__":
     #---------------------------#
     #   读取数据集
     #---------------------------#
-    # 使用 ultralytics 的 DataLoader 加载标准 YOLO 格式数据集
     import yaml
+    from ultralytics.utils import DEFAULT_CFG, IterableSimpleNamespace
+
     with open(classes_path, encoding='utf-8') as f:
         ydata = yaml.safe_load(f)
+
+    # 基于 ultralytics 默认配置构建 cfg，仅覆写关键字段
+    cfg = IterableSimpleNamespace(**vars(DEFAULT_CFG))
+    cfg.task = model.yaml.get('task', 'detect')
+    cfg.imgsz = input_shape[0]
+    cfg.fraction = 1.0
+    cfg.rect = False
+    cfg.cache = None
+    cfg.single_cls = False
+    cfg.classes = None
 
     dataset_path = ydata.get('path', '')
     train_path = os.path.join(dataset_path, ydata['train'], '') if dataset_path else ydata['train']
     val_path = os.path.join(dataset_path, ydata['val'], '') if dataset_path else ydata['val']
 
+    model_stride = int(model.stride.max()) if hasattr(model, 'stride') else 32
+
     # 构建 ultralytics YOLO dataset
     train_dataset = build_yolo_dataset(
-        cfg=model.yaml,
-        img_path=os.path.join(train_path, 'images'),
+        cfg=cfg,
+        img_path=train_path,
         batch=Freeze_batch_size,
-        data=classes_path,
+        data=ydata,
+        mode='train',
         rect=False,
-        stride=32,
-        augment=True,
-        prefix='train: ',
+        stride=model_stride,
     )
 
     val_dataset = build_yolo_dataset(
-        cfg=model.yaml,
-        img_path=os.path.join(val_path, 'images'),
+        cfg=cfg,
+        img_path=val_path,
         batch=Unfreeze_batch_size,
-        data=classes_path,
+        data=ydata,
+        mode='val',
         rect=True,
-        stride=32,
-        augment=False,
-        prefix='val: ',
+        stride=model_stride,
     )
 
     num_train = len(train_dataset)
@@ -341,8 +432,12 @@ if __name__ == "__main__":
     #   冻结一定部分训练
     #------------------------------------#
     if Freeze_Train:
-        for param in model.backbone.parameters():
-            param.requires_grad = False
+        # ultralytics 模型没有 .backbone 属性，通过冻结前 freeze 层来实现
+        freeze_list = range(10)
+        freeze_layer_names = [f"model.{x}." for x in freeze_list]
+        for k, v in model.named_parameters():
+            if any(x in k for x in freeze_layer_names):
+                v.requires_grad = False
 
     #-------------------------------------------------------------------#
     #   如果不冻结训练的话，直接设置batch_size为Unfreeze_batch_size
@@ -415,11 +510,12 @@ if __name__ == "__main__":
             elif hasattr(module, "weight") and isinstance(module.weight, nn.Parameter):
                 g0.append(param)  # weight (with decay)
 
-    optim_args = {"lr": Init_lr_fit, "momentum": momentum}
+    optim_args = {"lr": Init_lr_fit}
     if optimizer_type_resolved in ("Adam", "AdamW", "Adamax", "NAdam", "RAdam"):
         optim_args["betas"] = (momentum, 0.999)
         optim_args["weight_decay"] = 0.0
     elif optimizer_type_resolved in ("SGD", "MuSGD"):
+        optim_args["momentum"] = momentum
         optim_args["nesterov"] = True
 
     optimizer = getattr(optim, optimizer_type_resolved)([
@@ -524,8 +620,9 @@ if __name__ == "__main__":
                 Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
             lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
 
-            for param in model.backbone.parameters():
-                param.requires_grad = True
+            for k, v in model.named_parameters():
+                if any(x in k for x in freeze_layer_names):
+                    v.requires_grad = True
 
             epoch_step = num_train // batch_size
             epoch_step_val = num_val // batch_size

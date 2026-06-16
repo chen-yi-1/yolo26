@@ -1,7 +1,19 @@
+import glob
 import os
 
 import torch
 from ultralytics import YOLO
+
+
+def default_model_path(task="segment", save_dir="logs"):
+    pattern = os.path.join("runs", task, save_dir, "*_unfreeze", "weights", "best.pt")
+    candidates = glob.glob(pattern)
+    if candidates:
+        return max(candidates, key=os.path.getmtime)
+    if task == "detect":
+        return "model_data/yolo26n.pt"
+    return "model_data/yolo26n-seg.pt"
+
 
 if __name__ == "__main__":
     '''
@@ -16,7 +28,7 @@ if __name__ == "__main__":
     #   训练好后logs文件夹下存在多个权值文件，选择验证集损失较低的即可。
     #   验证集损失较低不代表mAP较高，仅代表该权值在验证集上泛化性能较好。
     #------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolo26x.pt'
+    model_path      = default_model_path("segment")
     #------------------------------------------------------------------------------------------------------------------#
     #   data_yaml用于指定数据集配置文件路径
     #   该文件需包含数据集路径、类别数、类别名称等信息

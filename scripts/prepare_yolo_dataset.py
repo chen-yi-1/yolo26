@@ -276,6 +276,7 @@ def prepare_yolo_dataset(
     source_dir,
     output_dir,
     yaml_path=None,
+    sample_percent=None,
     sample_count=None,
     task="segment",
     train_ratio=0.8,
@@ -311,7 +312,8 @@ def prepare_yolo_dataset(
     image_index = build_image_index(discover_image_files(source_dir))
     reset_output_dir(output_dir)
 
-    sampled_labels = sample_items_fixed_count(label_files, sample_count, "all", seed)
+    sampled_labels = sample_items(label_files, sample_percent, "all", seed)
+    sampled_labels = sample_items_fixed_count(sampled_labels, sample_count, "all", seed)
     train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
     train_count, train_missing = copy_labelled_items(
         source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed

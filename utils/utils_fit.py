@@ -26,7 +26,14 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history,
         if iteration >= epoch_step:
             break
 
-        images, batch_targets = batch
+        # ultralytics 数据集返回 uint8 (0-255)，模型需要 float32 [0,1]
+        images = batch['img'].float() / 255.0
+        # 拼接 ultralytics batch dict 为 Loss 期望的格式: [N, 6] = [batch_idx, cls, x, y, w, h]
+        batch_targets = torch.cat([
+            batch['batch_idx'].float().view(-1, 1),
+            batch['cls'].float().view(-1, 1),
+            batch['bboxes'].float(),
+        ], dim=-1)
         with torch.no_grad():
             if cuda:
                 images = images.cuda(local_rank)
@@ -41,8 +48,8 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history,
             torch.nn.utils.clip_grad_norm_(model_train.parameters(), max_norm=10.0)
             optimizer.step()
         else:
-            from torch.cuda.amp import autocast
-            with autocast():
+            from torch.amp import autocast
+            with autocast('cuda'):
                 outputs = model_train(images)
                 loss_value = yolo_loss(outputs, batch_targets)
             scaler.scale(loss_value).backward()
@@ -76,7 +83,14 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history,
     for iteration, batch in enumerate(gen_val):
         if iteration >= epoch_step_val:
             break
-        images, batch_targets = batch
+        # ultralytics 数据集返回 uint8 (0-255)，模型需要 float32 [0,1]
+        images = batch['img'].float() / 255.0
+        # 拼接 ultralytics batch dict 为 Loss 期望的格式: [N, 6] = [batch_idx, cls, x, y, w, h]
+        batch_targets = torch.cat([
+            batch['batch_idx'].float().view(-1, 1),
+            batch['cls'].float().view(-1, 1),
+            batch['bboxes'].float(),
+        ], dim=-1)
         with torch.no_grad():
             if cuda:
                 images = images.cuda(local_rank)

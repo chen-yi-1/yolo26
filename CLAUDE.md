@@ -1,138 +1,209 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 ## Project Overview
 
-YOLO26 instance segmentation uses the official `ultralytics.YOLO` training pipeline with a thin configuration wrapper. YOLO segmentation-format datasets, freeze-thaw training strategy, custom inference with Chinese font support and multiple prediction modes.
+YOLO26 is a local training and inference project for YOLO26 detection and
+instance segmentation models. The project uses Ultralytics model and dataset
+components, but the current training entry point is a custom loop, not a thin
+`ultralytics.YOLO.train()` wrapper.
 
-YOLO26 key traits:
-- **NMS-Free**: `end2end=True`, dual head (one2one for inference, one2many for training)
-- **DFL-Free**: `reg_max=1`, direct bbox regression without distribution
-- Backbone: Conv + C3k2 + SPPF + C2PSA (attention), DWConv in classification head
-- Scales: n/s/m/l/x (x: 58.8M params, 208.5 GFLOPs)
+YOLO26 traits used by this codebase:
+
+- NMS-free style end-to-end head with `one2one` and `one2many` branches.
+- DFL-free box regression for YOLO26 checkpoints with `reg_max=1`.
+- Training loss reads the `one2many` branch.
+- Inference decodes the `one2one` branch.
+- Classification heads are replaced in `train.py` when the dataset class count
+  differs from the pretrained checkpoint.
 
 ## Commands
 
 ```bash
 # Install dependencies
-pip install torch torchvision ultralytics
+pip install -r requirements.txt
 
-# Prepare dataset (official Ultralytics YOLO format)
-# 1. Place images in datasets/images/train and datasets/images/val
-# 2. Place YOLO labels in datasets/labels/train and datasets/labels/val
-# 3. Edit dataset.yaml: path, train, val, nc, names
+# Prepare a YOLO dataset from an edited source directory
+python scripts/prepare_yolo_dataset.py --source dataset --output datasets --task segment
+python scripts/prepare_yolo_dataset.py --source dataset --output datasets --task detect
 
-# Train (edit train.py config section first)
+# Train. Edit the config block in train.py first.
 python train.py
 
-# Predict (edit yolo.py _defaults to set model_path and classes_path)
-python predict.py              # interactive: input image path to detect
-# Modes in predict.py: predict / video / fps / dir_predict / heatmap / export_onnx
+# Predict. Edit yolo.py _defaults first.
+python predict.py
 
-# Evaluate mAP through official ultralytics validation
-python get_map.py              # edit model_path/data_yaml/split first
+# Validate mAP through official Ultralytics validation
+python get_map.py
 
-# View model FLOPs & params
-python summary.py              # edit phi first
+# Run tests
+python -m pytest -q
+python -m compileall -q train.py utils\utils_fit.py get_map.py scripts
 ```
+
+## Dataset Layout
+
+Prepared datasets use the official Ultralytics layout:
+
+```text
+datasets/
+  images/
+    train/
+    val/
+  labels/
+    train/
+    val/
+  datasets.yaml
+```
+
+`datasets/datasets.yaml` should contain:
+
+```yaml
+path: C:/Users/EDY/Desktop/yolo26/datasets
+train: images/train
+val: images/val
+nc: 2
+names:
+  0: abnormal
+  1: healthy
+```
+
+`scripts/prepare_yolo_dataset.py` supports `--task segment` for polygon labels
+and `--task detect` for bbox labels. It can also sample with `--sample-count`.
 
 ## Architecture
 
 ### Training (`train.py`)
-Thin wrapper around `ultralytics.YOLO.train()`. Two-phase freeze-thaw:
-- **Phase 1** (freeze): `freeze=10` freezes backbone layers, larger batch size, mosaic stays on
-- **Phase 2** (unfreeze): `freeze=None` unfreezes all, smaller batch, mosaic closes for last N epochs
 
-All training params (optimizer, LR, augmentation, loss gains) are passed directly to ultralytics. The old custom training loop, Loss, EMA, optimizer, and DataLoader are deleted — ultralytics handles everything internally.
+Current training architecture:
 
-Config section at the top of `if __name__ == "__main__":` uses the same parameter names as the old codebase (`Freeze_Epoch`, `Freeze_Train`, `Freeze_batch_size`, etc.) for familiarity.
+- Loads model weights through `ultralytics.YOLO(model_path).model`.
+- Reads class names and `nc` from `datasets/datasets.yaml` via
+  `utils.get_classes`.
+- If `num_classes != model.nc`, replaces classification heads under both
+  `head.one2many["cls_head"]` and `head.one2one["cls_head"]`.
+- Builds datasets with `ultralytics.data.build.build_yolo_dataset`.
+- Uses PyTorch `DataLoader` with the dataset-provided `collate_fn`.
+- Uses `nets.yolo_training.Loss`, `ModelEMA`, `get_lr_scheduler`, and
+  `set_optimizer_lr`.
+- Runs one epoch at a time through `utils.utils_fit.fit_one_epoch`.
+- Saves `.pth` checkpoints under `logs/loss_<timestamp>/`.
 
-**Init_Epoch and resume:** `Init_Epoch > 0` triggers resume mode:
-- Auto-discovers the latest `last.pt` under `runs/segment/{save_dir}/`, validates it has `epoch`/`optimizer` state
-- Extracts `train_name` from the checkpoint path so results write back to the same directory
-- `torch_load_weights_only_false()` temporarily patches `torch.load` to force `weights_only=False` during resume operations (required for PyTorch 2.6+ compatibility with ultralytics)
-- When checkpoint epoch ≠ `Init_Epoch`, warns but respects `Init_Epoch` for phase/skip logic; actual resume epoch is determined by the checkpoint
-- Fresh two-phase training writes separate run directories: `{train_name}_freeze` and `{train_name}_unfreeze`
-- Resume training writes back to the checkpoint's existing run directory
-- Phase 1 also supports resume when `Init_Epoch > 0` and `Init_Epoch < Freeze_Epoch`
-- `_add_per_epoch_plotting()` callback updates `results.png` after each epoch so curves are visible even if training is interrupted
+Two-stage freeze/unfreeze training is still present. Ultralytics models in this
+project do not expose `.backbone`, so freezing and unfreezing are implemented by
+matching parameter names with prefixes `model.0.` through `model.9.`.
+
+`optimizer_type="auto"` resolves to SGD for longer runs and AdamW for shorter
+runs. Adam-family optimizers must receive `betas`, not `momentum`.
+
+Resume helper functions are defined at module scope for tests and future resume
+work:
+
+- `torch_load_weights_only_false()`
+- `phase_train_names()`
+- `find_latest_resume_checkpoint()`
+- `phase2_checkpoint()`
+- `phase2_epochs()`
+
+The main training loop currently still saves local `.pth` state dict files; it
+does not resume Ultralytics `.pt` trainer checkpoints end-to-end.
+
+### Training Batch Format (`utils/utils_fit.py`)
+
+Ultralytics datasets yield batch dictionaries. `fit_one_epoch` converts them to
+the local loss format:
+
+```text
+batch["img"] -> float tensor in [0, 1]
+batch["batch_idx"], batch["cls"], batch["bboxes"] -> [N, 6]
+```
+
+The local loss expects `[batch_idx, cls, x, y, w, h]`.
+
+### Loss (`nets/yolo_training.py`)
+
+`Loss` expects YOLO26 model outputs shaped as a dictionary with an `one2many`
+branch:
+
+- `outputs["one2many"]["boxes"]`
+- `outputs["one2many"]["scores"]`
+- `outputs["one2many"]["feats"]`
+
+It uses task-aligned assignment, CIoU box loss, BCE class loss, and no DFL for
+YOLO26 `reg_max=1` models.
 
 ### Inference (`yolo.py`)
-`YOLO` class wraps `ultralytics.YOLO`. Methods:
-- `detect_image(image, crop, count)` — PIL Image → segment → draw masks, contours, boxes, and Chinese labels
-- `get_FPS(image, test_interval)` — FPS benchmark
-- `detect_heatmap(image, save_path)` — class-activation heatmap from `one2one` branch feats
-- `convert_to_onnx(simplify, path)` — ONNX export
 
-Supports letterbox resize, confidence/NMS filtering, and Chinese font rendering (simhei.ttf).
+`YOLO` wraps `ultralytics.YOLO(...).model` for local inference. Methods:
+
+- `detect_image(image, crop, count)`
+- `get_FPS(image, test_interval)`
+- `detect_heatmap(image, save_path)`
+- `convert_to_onnx(simplify, path)`
+
+Inference uses `utils.utils_bbox.DecodeBox`, Chinese font rendering through
+`model_data/simhei.ttf`, and modes configured in `predict.py`.
 
 ### Evaluation (`get_map.py`)
-Runs official `ultralytics.YOLO.val()` against `dataset.yaml`. Use `split="val"` for the validation set, or add a `test:` entry to `dataset.yaml` and set `split="test"`.
 
-### Utility files
+`get_map.py` uses official `ultralytics.YOLO.val()`.
 
-| File | Purpose |
-|---|---|
-| `utils/utils.py` | `cvtColor`, `get_classes`, `measure_text`, `seed_everything`, `preprocess_input`, `resize_image`, `show_config` |
+`default_model_path()` prefers the latest
+`runs/<task>/logs/*_unfreeze/weights/best.pt`. If none exists, it falls back to
+`model_data/yolo26n-seg.pt` for segmentation or `model_data/yolo26n.pt` for
+detection.
 
-### Gitignored directories
-`model_data/`, `logs/`, `datasets/` — not tracked. Segment model weights (`yolo26x-seg.pt`) and fonts go in `model_data/`.
+## Important Project Notes
+
+- There is currently no `config.py`; edit config blocks in `train.py`,
+  `yolo.py`, `predict.py`, and `get_map.py`.
+- Keep changes surgical. This repository is mid-refactor and tests may describe
+  intended helper contracts even when the main loop is still custom.
+- Do not replace the custom training loop with `YOLO.train()` unless the user
+  explicitly asks for that architecture change.
+- `model_data/`, `logs/`, `datasets/`, and local run outputs are environment
+  artifacts and may be ignored by git.
 
 ## Behavioral Guidelines
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial
+tasks, use judgment.
 
 ### 1. Think Before Coding
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
 Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them.
+- If a simpler approach exists, say so.
+- If something is unclear, stop and name what is unclear.
 
 ### 2. Simplicity First
 
-**Minimum code that solves the problem. Nothing speculative.**
-
 - No features beyond what was asked.
 - No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+- No speculative configurability.
+- If a small fix is enough, prefer the small fix.
 
 ### 3. Surgical Changes
 
-**Touch only what you must. Clean up only your own mess.**
-
 When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
 
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
+- Touch only what is needed.
+- Do not refactor unrelated code.
+- Match existing style.
+- Remove only imports, variables, or functions made unused by your own changes.
 
 ### 4. Goal-Driven Execution
 
-**Define success criteria. Loop until verified.**
-
 Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
 
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+```text
+1. Change X -> verify with Y
+2. Change Z -> verify with tests
 ```
 
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+For bugs, reproduce or isolate the failure before fixing, then verify with the
+smallest relevant command and the full test suite when practical.
