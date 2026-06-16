@@ -3,66 +3,23 @@
 #-------------------------------------#
 import datetime
 import os
-import shutil
-from contextlib import contextmanager
+from functools import partial
 
+import numpy as np
 import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from ultralytics import YOLO
+from ultralytics.data.build import build_yolo_dataset
+from ultralytics.utils import LOGGER
 
-from config import DATA, TASK, TRAIN, get_model_path, get_run_task
-from scripts.prepare_yolo_dataset import prepare_yolo_dataset
-
-
-@contextmanager
-def torch_load_weights_only_false():
-    """Temporarily force torch.load(weights_only=False) for ultralytics resume."""
-    torch_load = torch.load
-    torch.load = lambda *a, **kw: torch_load(*a, **{**kw, 'weights_only': False})
-    try:
-        yield
-    finally:
-        torch.load = torch_load
-
-
-def phase_train_names(train_name, is_resuming):
-    def base_name(name):
-        for suffix in ("_freeze", "_unfreeze"):
-            if name.endswith(suffix):
-                return name[: -len(suffix)]
-        return name
-
-    if is_resuming:
-        return train_name, f"{base_name(train_name)}_unfreeze"
-    return f"{train_name}_freeze", f"{train_name}_unfreeze"
-
-
-def phase2_epochs(init_epoch, freeze_epoch, unfreeze_epoch, freeze_train):
-    start_epoch = max(init_epoch, freeze_epoch if freeze_train else init_epoch)
-    return unfreeze_epoch - start_epoch
-
-
-def _setup_callbacks(model, save_phase_ckpt=False):
-    """统一注册训练回调：per-epoch 绘图 + Phase 1 保存未剥离的 checkpoint。
-
-    ultralytics 在训练正常结束后会自动剥离 last.pt 的 optimizer/epoch 状态，
-    导致 Phase 2 无法 resume。save_phase_ckpt=True 时额外保存 phase_last.pt。
-
-    注意：phase_last.pt 的复制必须挂在 on_model_save 上，不能挂在 on_fit_epoch_end。
-    final_eval() 会在 strip_optimizer 之后再次触发 on_fit_epoch_end，导致
-    phase_last.pt 被覆盖为已剥离的版本。
-    """
-    from ultralytics.utils.plotting import plot_results
-
-    def on_fit_epoch_end(trainer):
-        if trainer.csv.exists():
-            plot_results(file=trainer.csv)
-
-    def on_model_save(trainer):
-        if save_phase_ckpt:
-            shutil.copy(trainer.last, trainer.save_dir / 'weights' / 'phase_last.pt')
-
-    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-    if save_phase_ckpt:
-        model.add_callback("on_model_save", on_model_save)
+from nets.yolo_training import (Loss, ModelEMA, get_lr_scheduler,
+                                set_optimizer_lr)
+from utils.callbacks import EvalCallback, LossHistory
+from utils.utils import (get_classes, seed_everything, show_config,
+                         worker_init_fn)
 
 
 '''
@@ -76,38 +33,44 @@ def _setup_callbacks(model, save_phase_ckpt=False):
 
 2、损失值的大小用于判断是否收敛，比较重要的是有收敛的趋势，即验证集损失不断下降，如果验证集损失基本上不改变的话，模型基本上就收敛了。
    损失值的具体大小并没有什么意义，大和小只在于损失的计算方式，并不是接近于0才好。如果想要让损失好看点，可以直接到对应的损失函数里面除上10000。
-   训练过程中的损失值会保存在 runs/segment/logs/ 下
+   训练过程中的损失值会保存在logs文件夹下的loss_%Y_%m_%d_%H_%M_%S文件夹中
 
-3、训练好的权值文件保存在 runs/segment/logs/ 中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
+3、训练好的权值文件保存在logs文件夹中，每个训练世代（Epoch）包含若干训练步长（Step），每个训练步长（Step）进行一次梯度下降。
    如果只是训练了几个Step是不会保存的，Epoch和Step的概念要捋清楚一下。
 '''
 if __name__ == "__main__":
-    from ultralytics import YOLO
-
     #---------------------------------#
     #   Cuda    是否使用Cuda
     #           没有GPU可以设置成False
     #---------------------------------#
-    Cuda            = TRAIN["cuda"]
+    Cuda            = True
     #----------------------------------------------#
     #   Seed    用于固定随机种子
     #           使得每次独立训练都可以获得一样的结果
     #----------------------------------------------#
-    seed            = TRAIN["seed"]
+    seed            = 11
     #---------------------------------------------------------------------#
     #   fp16        是否使用混合精度训练
     #               可减少约一半的显存、需要pytorch1.7.1以上
     #---------------------------------------------------------------------#
-    fp16            = TRAIN["fp16"]
+    fp16            = False
+    #---------------------------------------------------------------------#
+    #   classes_path    指向model_data下的txt，与自己训练的数据集相关
+    #                   训练前一定要修改classes_path，使其对应自己的数据集
+    #---------------------------------------------------------------------#
+    classes_path    = 'datasets/datasets.yaml'
     #----------------------------------------------------------------------------------------------------------------------------#
     #   权值文件的下载请看README，可以通过网盘下载。模型的 预训练权重 对不同数据集是通用的，因为特征是通用的。
     #   模型的 预训练权重 比较重要的部分是 主干特征提取网络的权值部分，用于进行特征提取。
     #   预训练权重对于99%的情况都必须要用，不用的话主干部分的权值太过随机，特征提取效果不明显，网络训练的结果也不会好
     #
-    #   如果训练过程中存在中断训练的操作，可以在断点续训时将model_path设置成runs/segment/logs/下的last.pt权值文件。
+    #   如果训练过程中存在中断训练的操作，可以将model_path设置成logs文件夹下的权值文件，将已经训练了一部分的权值再次载入。
+    #   同时修改下方的 冻结阶段 或者 解冻阶段 的参数，来保证模型epoch的连续性。
     #
-    #   YOLO26 Segment 预训练权重路径（支持自动下载：yolo26n-seg.pt / yolo26s-seg.pt / yolo26m-seg.pt / yolo26l-seg.pt / yolo26x-seg.pt）
-    #   如果想要让模型从0开始训练，则设置model_path = 'yolo26x.yaml'，下面的Freeze_Train = False，此时从零开始训练，且没有冻结主干的过程。
+    #   当model_path = ''的时候不加载整个模型的权值。
+    #
+    #   此处使用的是整个模型的权重，因此是在train.py进行加载的。
+    #   如果想要让模型从0开始训练，则设置model_path = ''，下面的Freeze_Train = Fasle，此时从0开始训练，且没有冻结主干的过程。
     #
     #   一般来讲，网络从0开始的训练效果会很差，因为权值太过随机，特征提取效果不明显，因此非常、非常、非常不建议大家从0开始训练！
     #   从0开始训练有两个方案：
@@ -115,33 +78,31 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    task            = TASK
-    model_path      = get_model_path(task)
-    #---------------------------------------------------------------------#
-    #   data_yaml        YOLO格式的数据集配置文件路径
-    #                    文件中应包含 train/val 路径 和 names 类别名
-    #---------------------------------------------------------------------#
-    data_yaml       = DATA["yaml"]
+    model_path      = 'model_data/yolo26x.pt'
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
-    input_shape     = TRAIN["input_shape"]
+    input_shape     = [640, 640]
     #----------------------------------------------------------------------------------------------------------------------------#
-    #   YOLO26 训练策略（ultralytics optimizer="auto" 默认使用 Adam）：
-    #   小数据集 + 预训练模型 → Adam 优化器，100 epochs 即可收敛
+    #   训练分为两个阶段，分别是冻结阶段和解冻阶段。设置冻结阶段是为了满足机器性能不足的同学的训练需求。
+    #   冻结训练需要的显存较小，显卡非常差的情况下，可设置Freeze_Epoch等于UnFreeze_Epoch，Freeze_Train = True，此时仅仅进行冻结训练。
     #
-    #   参数建议：
-    #   （一）加载预训练权重（推荐）：
+    #   在此提供若干参数设置建议，各位训练者根据自己的需求进行灵活调整：
+    #   （一）从整个模型的预训练权重开始训练：
     #       Adam：
-    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 100，Freeze_Train = True，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。
-    #           Init_Epoch = 0，UnFreeze_Epoch = 100，Freeze_Train = False，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。
+    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 100，Freeze_Train = True，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。（冻结）
+    #           Init_Epoch = 0，UnFreeze_Epoch = 100，Freeze_Train = False，optimizer_type = 'adam'，Init_lr = 1e-3，weight_decay = 0。（不冻结）
     #       SGD：
-    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 200，Freeze_Train = True，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。
-    #   （二）从零开始训练（不推荐）：
-    #       UnFreeze_Epoch >= 300，Unfreeze_batch_size >= 16，Freeze_Train = False，optimizer_type = 'sgd'，Init_lr = 1e-2，mosaic = True。
-    #   （三）batch_size：
-    #       显存不足请调小batch_size。受BatchNorm影响，batch_size最小为2。
-    #       正常情况下Freeze_batch_size建议为Unfreeze_batch_size的1-2倍。
+    #           Init_Epoch = 0，Freeze_Epoch = 50，UnFreeze_Epoch = 300，Freeze_Train = True，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。（冻结）
+    #           Init_Epoch = 0，UnFreeze_Epoch = 300，Freeze_Train = False，optimizer_type = 'sgd'，Init_lr = 1e-2，weight_decay = 5e-4。（不冻结）
+    #       其中：UnFreeze_Epoch可以在100-300之间调整。
+    #   （二）从0开始训练：
+    #       Init_Epoch = 0，UnFreeze_Epoch >= 300，Unfreeze_batch_size >= 16，Freeze_Train = False（不冻结训练）
+    #       其中：UnFreeze_Epoch尽量不小于300。optimizer_type = 'sgd'，Init_lr = 1e-2，mosaic = True。
+    #   （三）batch_size的设置：
+    #       在显卡能够接受的范围内，以大为好。显存不足与数据集大小无关，提示显存不足（OOM或者CUDA out of memory）请调小batch_size。
+    #       受到BatchNorm层影响，batch_size最小为2，不能为1。
+    #       正常情况下Freeze_batch_size建议为Unfreeze_batch_size的1-2倍。不建议设置的差距过大，因为关系到学习率的自动调整。
     #----------------------------------------------------------------------------------------------------------------------------#
     #------------------------------------------------------------------#
     #   冻结阶段训练参数
@@ -149,16 +110,16 @@ if __name__ == "__main__":
     #   占用的显存较小，仅对网络进行微调
     #   Init_Epoch          模型当前开始的训练世代，其值可以大于Freeze_Epoch，如设置：
     #                       Init_Epoch = 60、Freeze_Epoch = 50、UnFreeze_Epoch = 100
-    #                       会跳过冻结阶段，直接从60代开始。
+    #                       会跳过冻结阶段，直接从60代开始，并调整对应的学习率。
     #                       （断点续练时使用）
     #   Freeze_Epoch        模型冻结训练的Freeze_Epoch
     #                       (当Freeze_Train=False时失效)
     #   Freeze_batch_size   模型冻结训练的batch_size
     #                       (当Freeze_Train=False时失效)
     #------------------------------------------------------------------#
-    Init_Epoch          = TRAIN["init_epoch"]
-    Freeze_Epoch        = TRAIN["freeze_epoch"]
-    Freeze_batch_size   = TRAIN["freeze_batch_size"]
+    Init_Epoch          = 0
+    Freeze_Epoch        = 50
+    Freeze_batch_size   = 32
     #------------------------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
@@ -167,44 +128,41 @@ if __name__ == "__main__":
     #                           YOLO26 小数据集推荐 100 epochs
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
-    UnFreeze_Epoch      = TRAIN["unfreeze_epoch"]
-    Unfreeze_batch_size = TRAIN["unfreeze_batch_size"]
+    UnFreeze_Epoch      = 100
+    Unfreeze_batch_size = 16
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
     #                   默认先冻结主干训练后解冻训练。
     #------------------------------------------------------------------#
-    Freeze_Train        = TRAIN["freeze_train"]
+    Freeze_Train        = True
 
     #------------------------------------------------------------------#
     #   其它训练参数：学习率、优化器、学习率下降有关
     #------------------------------------------------------------------#
     #------------------------------------------------------------------#
     #   Init_lr         模型的最大学习率
-    #                   Adam: 1e-3    SGD: 1e-2
     #   Min_lr          模型的最小学习率，默认为最大学习率的0.01
     #------------------------------------------------------------------#
-    Init_lr             = TRAIN["init_lr"]
+    Init_lr             = 1e-3
     Min_lr              = Init_lr * 0.01
     #------------------------------------------------------------------#
-    #   optimizer_type  使用到的优化器种类，可选的有auto、adam、sgd
-    #                   auto: ultralytics默认，YOLO26自动使用Adam
+    #   optimizer_type  使用到的优化器种类，可选的有adam、sgd
     #                   当使用Adam优化器时建议设置  Init_lr=1e-3
     #                   当使用SGD优化器时建议设置   Init_lr=1e-2
     #   momentum        优化器内部使用到的momentum参数
-    #                   当使用Adam时作为beta1
     #   weight_decay    权值衰减，可防止过拟合
-    #                   adam建议设置为0。
+    #                   adam会导致weight_decay错误，使用adam时建议设置为0。
     #------------------------------------------------------------------#
-    optimizer_type      = TRAIN["optimizer_type"]
-    momentum            = TRAIN["momentum"]
-    weight_decay        = TRAIN["weight_decay"]
+    optimizer_type      = "sgd"
+    momentum            = 0.937
+    weight_decay        = 5e-4
     #------------------------------------------------------------------#
     #   lr_decay_type   使用到的学习率下降方式，可选的有step、cos
     #------------------------------------------------------------------#
-    lr_decay_type       = TRAIN["lr_decay_type"]
+    lr_decay_type       = "cos"
     #------------------------------------------------------------------#
     #   mosaic              马赛克数据增强。
-    #   mosaic_prob         每个step有多少概率使用mosaic数据增强，默认100%。
+    #   mosaic_prob         每个step有多少概率使用mosaic数据增强，默认50%。
     #
     #   mixup               是否使用mixup数据增强，仅在mosaic=True时有效。
     #                       只会对mosaic增强后的图片进行mixup的处理。
@@ -214,265 +172,323 @@ if __name__ == "__main__":
     #   special_aug_ratio   参考YoloX，由于Mosaic生成的训练图片，远远脱离自然图片的真实分布。
     #                       当mosaic=True时，本代码会在special_aug_ratio范围内开启mosaic。
     #                       默认为前70%个epoch，100个世代会开启70个世代。
-    #                       对应ultralytics的close_mosaic参数：最后N个epoch关闭mosaic
     #------------------------------------------------------------------#
-    mosaic              = TRAIN["mosaic"]
-    mosaic_prob         = TRAIN["mosaic_prob"]
-    mixup               = TRAIN["mixup"]
-    mixup_prob          = TRAIN["mixup_prob"]
-    special_aug_ratio   = TRAIN["special_aug_ratio"]
+    mosaic              = True
+    mosaic_prob         = 0.5
+    mixup               = True
+    mixup_prob          = 0.5
+    special_aug_ratio   = 0.7
     #------------------------------------------------------------------#
     #   save_period     多少个epoch保存一次权值
     #------------------------------------------------------------------#
-    save_period         = TRAIN["save_period"]
+    save_period         = 10
     #------------------------------------------------------------------#
-    #   save_dir        训练输出的 project 名称（ultralytics 实际路径为 runs/segment/{save_dir}/{train_name}/）
+    #   save_dir        权值与日志文件保存的文件夹
     #------------------------------------------------------------------#
-    save_dir            = TRAIN["save_dir"]
+    save_dir            = 'logs'
     #------------------------------------------------------------------#
-    #   eval_flag       是否在训练时进行评估，评估对象为 dataset.yaml 的验证集
-    #   注意：ultralytics 默认每个epoch都验证一次，不支持eval_period间隔设置
-    #   如需减少验证频率，需要使用回调函数自定义验证逻辑
-    #   get_map.py 使用同一个官方验证入口，可通过 split 选择 val/test。
+    #   eval_flag       是否在训练时进行评估，评估对象为验证集
+    #                   评估需要消耗较多的时间，频繁评估会导致训练非常慢
     #------------------------------------------------------------------#
-    eval_flag           = TRAIN["eval_flag"]
+    eval_flag           = True
     #------------------------------------------------------------------#
     #   num_workers     用于设置是否使用多线程读取数据
     #                   开启后会加快数据读取速度，但是会占用更多内存
     #                   内存较小的电脑可以设置为2或者0
     #------------------------------------------------------------------#
-    num_workers         = TRAIN["num_workers"]
+    num_workers         = 4
 
+    seed_everything(seed)
     #------------------------------------------------------#
     #   设置用到的显卡
     #------------------------------------------------------#
-    device = 'cuda' if Cuda else 'cpu'
-    run_task = get_run_task(task)
+    device = torch.device('cuda' if Cuda and torch.cuda.is_available() else 'cpu')
 
     #------------------------------------------------------#
-    #   生成训练日志名称（Phase 1 和 Phase 2 共用）
+    #   获取classes
     #------------------------------------------------------#
-    train_name = f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    class_names, num_classes = get_classes(classes_path)
 
     #------------------------------------------------------#
-    #   断点续训：Init_Epoch > 0 时自动发现最新 checkpoint
+    #   创建yolo模型
     #------------------------------------------------------#
+    model = YOLO(model_path).model
+    model.nc = num_classes  # override num_classes for custom dataset
+
     if Init_Epoch > 0:
-        base_dir = os.path.join('runs', run_task, save_dir)
-        ckpt_paths = []
-        if os.path.isdir(base_dir):
-            ckpt_paths = sorted(
-                [os.path.join(base_dir, d, 'weights', 'last.pt')
-                 for d in os.listdir(base_dir)
-                 if os.path.isfile(os.path.join(base_dir, d, 'weights', 'last.pt'))],
-                key=os.path.getmtime,
-            )
-        if not ckpt_paths:
-            raise RuntimeError(
-                f"Init_Epoch={Init_Epoch} but no checkpoint found under {base_dir}. "
-                f"Set Init_Epoch=0 to start fresh training."
-            )
+        # 断点续训: 用户手动设置 model_path 指向 last_epoch_weights.pth
+        print(f'Load weights for resume: {model_path}')
+    else:
+        print(f'Load pretrained weights: {model_path}')
 
-        model_path = ckpt_paths[-1]
-        with torch_load_weights_only_false():
-            ckpt = torch.load(model_path, map_location='cpu')
-        # checkpoint 中 project/resume 字段可能含完整路径导致目录重复，统一修正
-        if 'train_args' in ckpt:
-            args = ckpt['train_args']
-            changed = False
-            if args.get('project') != save_dir:
-                args['project'] = save_dir
-                changed = True
-            if isinstance(args.get('resume'), str):
-                args['resume'] = True
-                changed = True
-            if changed:
-                torch.save(ckpt, model_path)
-        ckpt_epoch = ckpt.get('epoch', None)
-        if ckpt_epoch is None:
-            raise RuntimeError(
-                f"Checkpoint {model_path} has no training state (missing epoch/optimizer).\n"
-                f"  This can happen if the training completed normally — ultralytics strips\n"
-                f"  optimizer state from last.pt after training finishes. Use phase_last.pt\n"
-                f"  instead, or set Init_Epoch=0 to start fresh."
-            )
+    model_train = model.train()
 
-        actual_init = ckpt_epoch + 1  # 0-indexed → 1-indexed
-        if actual_init != Init_Epoch:
-            print(f"\n[Warn] Init_Epoch={Init_Epoch} but checkpoint last completed epoch={actual_init}.")
-            print(f"       Phase logic uses Init_Epoch={Init_Epoch}, but training will resume")
-            print(f"       from epoch {actual_init+1} per checkpoint state.")
+    #----------------------#
+    #   获得损失函数
+    #----------------------#
+    yolo_loss = Loss(model)
 
-        # 从 checkpoint 路径反推 train_name，续训结果写回原目录
-        # 确保 train_name 只包含目录名，不包含路径前缀
-        train_name = os.path.basename(os.path.dirname(os.path.dirname(model_path)))
-        # 防止 train_name 包含路径分隔符导致路径重复
-        train_name = os.path.basename(train_name) if os.sep in train_name else train_name
-        print(f"\n[Resume] Init_Epoch={Init_Epoch}, checkpoint epoch={ckpt_epoch+1}")
-        print(f"  {model_path}")
-        print(f"  Results will be saved to: runs/{run_task}/{save_dir}/{train_name}/")
+    #----------------------#
+    #   记录Loss
+    #----------------------#
+    time_str = datetime.datetime.strftime(datetime.datetime.now(), '%Y_%m_%d_%H_%M_%S')
+    log_dir = os.path.join(save_dir, "loss_" + str(time_str))
+    loss_history = LossHistory(log_dir, model, input_shape=input_shape)
 
-    freeze_train_name, unfreeze_train_name = phase_train_names(train_name, Init_Epoch > 0)
+    #------------------------------------------------------------------#
+    #   torch 1.2不支持amp，建议使用torch 1.7.1及以上正确使用fp16
+    #   因此torch1.2这里显示"could not be resolve"
+    #------------------------------------------------------------------#
+    if fp16:
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler()
+    else:
+        scaler = None
 
-    from utils.utils import show_config
-    show_config(
-        task = task, model_path = model_path, data_yaml = data_yaml, input_shape = input_shape,
-        Init_Epoch = Init_Epoch, Freeze_Epoch = Freeze_Epoch, UnFreeze_Epoch = UnFreeze_Epoch,
-        Freeze_batch_size = Freeze_batch_size, Unfreeze_batch_size = Unfreeze_batch_size,
-        Freeze_Train = Freeze_Train,
-        Init_lr = Init_lr, Min_lr = Min_lr, optimizer_type = optimizer_type,
-        momentum = momentum, lr_decay_type = lr_decay_type,
-        save_period = save_period, save_dir = save_dir, num_workers = num_workers,
+    if Cuda and torch.cuda.is_available():
+        cudnn.benchmark = True
+        model_train = model_train.cuda()
+
+    #----------------------------#
+    #   权值平滑
+    #----------------------------#
+    ema = ModelEMA(model_train)
+
+    #---------------------------#
+    #   读取数据集
+    #---------------------------#
+    # 使用 ultralytics 的 DataLoader 加载标准 YOLO 格式数据集
+    import yaml
+    with open(classes_path, encoding='utf-8') as f:
+        ydata = yaml.safe_load(f)
+
+    dataset_path = ydata.get('path', '')
+    train_path = os.path.join(dataset_path, ydata['train'], '') if dataset_path else ydata['train']
+    val_path = os.path.join(dataset_path, ydata['val'], '') if dataset_path else ydata['val']
+
+    # 构建 ultralytics YOLO dataset
+    train_dataset = build_yolo_dataset(
+        cfg=model.yaml,
+        img_path=os.path.join(train_path, 'images'),
+        batch=Freeze_batch_size,
+        data=classes_path,
+        rect=False,
+        stride=32,
+        augment=True,
+        prefix='train: ',
     )
 
-    if Freeze_Train:
-        if Init_Epoch >= Freeze_Epoch:
-            print(f"\n[Info] Init_Epoch={Init_Epoch} >= Freeze_Epoch={Freeze_Epoch}, skipping freeze phase.")
-        if Init_Epoch >= UnFreeze_Epoch:
-            raise ValueError("Init_Epoch must be less than UnFreeze_Epoch!")
+    val_dataset = build_yolo_dataset(
+        cfg=model.yaml,
+        img_path=os.path.join(val_path, 'images'),
+        batch=Unfreeze_batch_size,
+        data=classes_path,
+        rect=True,
+        stride=32,
+        augment=False,
+        prefix='val: ',
+    )
 
-    #----------------------------------------------#
+    num_train = len(train_dataset)
+    num_val = len(val_dataset)
+
+    show_config(
+        classes_path=classes_path, model_path=model_path, input_shape=input_shape,
+        Init_Epoch=Init_Epoch, Freeze_Epoch=Freeze_Epoch, UnFreeze_Epoch=UnFreeze_Epoch,
+        Freeze_batch_size=Freeze_batch_size, Unfreeze_batch_size=Unfreeze_batch_size,
+        Freeze_Train=Freeze_Train,
+        Init_lr=Init_lr, Min_lr=Min_lr, optimizer_type=optimizer_type,
+        momentum=momentum, lr_decay_type=lr_decay_type,
+        save_period=save_period, save_dir=save_dir, num_workers=num_workers,
+        num_train=num_train, num_val=num_val
+    )
+
+    #---------------------------------------------------------#
     #   总训练世代指的是遍历全部数据的总次数
     #   总训练步长指的是梯度下降的总次数
     #   每个训练世代包含若干训练步长，每个训练步长进行一次梯度下降。
     #   此处仅建议最低训练世代，上不封顶，计算时只考虑了解冻部分
-    #----------------------------------------------#
+    #----------------------------------------------------------#
     wanted_step = 5e4 if optimizer_type == "sgd" else 1.5e4
-    estimated_images = 1000
-    if os.path.exists(data_yaml):
-        try:
-            import yaml
-            with open(data_yaml, encoding='utf-8') as f:
-                ydata = yaml.safe_load(f)
-            train_dir = os.path.join(ydata.get('path', ''), ydata.get('train', ''))
-            if os.path.isdir(train_dir):
-                import glob
-                estimated_images = len(glob.glob(os.path.join(train_dir, '*.[jJ][pP][gG]'))) or estimated_images
-        except Exception:
-            pass
-    total_step  = estimated_images // Unfreeze_batch_size * UnFreeze_Epoch
+    total_step = num_train // Unfreeze_batch_size * UnFreeze_Epoch
     if total_step <= wanted_step:
-        print("\n\033[1;33;44m[Warning] 使用%s优化器时，建议将训练总步长设置到%d以上。\033[0m"%(optimizer_type, wanted_step))
-        print("\033[1;33;44m[Warning] 如果数据集较小，请增加UnFreeze_Epoch以满足足够的训练步长。\033[0m")
-
-    # 两个阶段的公共训练参数
-    train_args = dict(
-        data=data_yaml,
-        imgsz=input_shape[0],
-        device=device,
-        workers=num_workers,
-        optimizer=optimizer_type,
-        lr0=Init_lr,
-        lrf=Min_lr / Init_lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
-        cos_lr=(lr_decay_type == "cos"),
-        mosaic=mosaic_prob if mosaic else 0.0,
-        mixup=mixup_prob if (mosaic and mixup) else 0.0,
-        box=7.5,
-        cls=0.5,
-        dfl=1.5,
-        amp=fp16,
-        seed=seed,
-        project=save_dir,
-        exist_ok=True,
-        save_period=save_period,
-        val=eval_flag,
-        plots=True,
-        hsv_h=0.015,
-        hsv_s=0.7,
-        hsv_v=0.4,
-        degrees=0.0,
-        translate=0.1,
-        scale=0.5,
-        shear=0.0,
-        perspective=0.0,
-        flipud=0.0,
-        fliplr=0.5,
-    )
+        if num_train // Unfreeze_batch_size == 0:
+            raise ValueError('数据集过小，无法进行训练，请扩充数据集。')
+        wanted_epoch = wanted_step // (num_train // Unfreeze_batch_size) + 1
+        print("\n\033[1;33;44m[Warning] 使用%s优化器时，建议将训练总步长设置到%d以上。\033[0m" % (
+            optimizer_type, wanted_step))
+        print("\033[1;33;44m[Warning] 本次运行的总训练数据量为%d，Unfreeze_batch_size为%d，"
+              "共训练%d个Epoch，计算出总训练步长为%d。\033[0m" % (
+                  num_train, Unfreeze_batch_size, UnFreeze_Epoch, total_step))
+        print("\033[1;33;44m[Warning] 由于总训练步长为%d，小于建议总步长%d，"
+              "建议设置总世代为%d。\033[0m" % (total_step, wanted_step, wanted_epoch))
 
     #------------------------------------------------------#
-    #   Phase 1: Freeze Backbone
-    #   Phase 2: Unfreeze All
-    #
     #   主干特征提取网络特征通用，冻结训练可以加快训练速度
     #   也可以在训练初期防止权值被破坏。
-    #   Init_Epoch为起始世代, Freeze_Epoch为冻结世代, UnFreeze_Epoch总世代
+    #   Init_Epoch为起始世代
+    #   Freeze_Epoch为冻结训练的世代
+    #   UnFreeze_Epoch总训练世代
     #   提示OOM或者显存不足请调小Batch_size
     #------------------------------------------------------#
-    is_resuming = Init_Epoch > 0
-    freeze_phase_epochs = Freeze_Epoch - Init_Epoch
-    freeze_save_dir = None
+    UnFreeze_flag = False
 
-    if Freeze_Train and freeze_phase_epochs > 0:
-        print(f"\n[Phase 1] Freezing backbone for {freeze_phase_epochs} epochs "
-              f"(epoch {Init_Epoch}→{Freeze_Epoch}, batch={Freeze_batch_size})"
-              f"{' [resume]' if is_resuming else ''}")
-        model = YOLO(model_path)
-        _setup_callbacks(model, save_phase_ckpt=True)
-        phase1_args = dict(
-            **train_args,
-            name=freeze_train_name,
-            epochs=Freeze_Epoch,
-            batch=Freeze_batch_size,
-            warmup_epochs=0 if is_resuming else 3.0,
-            close_mosaic=0,
-            freeze=10,
-            resume=is_resuming,
-        )
-        if is_resuming:
-            with torch_load_weights_only_false():
-                model.train(**phase1_args)
-        else:
-            model.train(**phase1_args)
-        freeze_save_dir = str(model.trainer.save_dir)
+    #------------------------------------#
+    #   冻结一定部分训练
+    #------------------------------------#
+    if Freeze_Train:
+        for param in model.backbone.parameters():
+            param.requires_grad = False
 
-    # ================================ #
-    #   Phase 2: Unfreeze All
-    # ================================ #
-    remaining = phase2_epochs(Init_Epoch, Freeze_Epoch, UnFreeze_Epoch, Freeze_Train)
-    if remaining > 0:
-        start_epoch = max(Init_Epoch, Freeze_Epoch if Freeze_Train else Init_Epoch)
+    #-------------------------------------------------------------------#
+    #   如果不冻结训练的话，直接设置batch_size为Unfreeze_batch_size
+    #-------------------------------------------------------------------#
+    batch_size = Freeze_batch_size if Freeze_Train else Unfreeze_batch_size
 
-        if freeze_save_dir is not None:
-            # Phase 1 刚跑完，加载 phase_last.pt 的模型权重但不 resume。
-            # Phase 2 有不同的 epochs/freeze/batch，是新的训练会话。
-            last_pt = os.path.join(freeze_save_dir, 'weights', 'phase_last.pt')
-            resume_phase2 = False
-            tag = ' [from phase_last.pt]'
-        else:
-            last_pt = model_path
-            resume_phase2 = is_resuming
-            tag = ' [resume]' if is_resuming else ''
+    #-------------------------------------------------------------------#
+    #   判断当前batch_size，自适应调整学习率
+    #-------------------------------------------------------------------#
+    nbs = 64
+    lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
+    lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
+    Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+    Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
 
-        print(f"\n[Phase 2] Unfreezing all layers for {remaining} epochs "
-              f"(epoch {start_epoch}→{UnFreeze_Epoch}, batch={Unfreeze_batch_size}){tag}")
+    #---------------------------------------#
+    #   根据optimizer_type选择优化器
+    #---------------------------------------#
+    pg0, pg1, pg2 = [], [], []
+    for k, v in model.named_modules():
+        if hasattr(v, "bias") and isinstance(v.bias, nn.Parameter):
+            pg2.append(v.bias)
+        if isinstance(v, nn.BatchNorm2d) or "bn" in k:
+            pg0.append(v.weight)
+        elif hasattr(v, "weight") and isinstance(v.weight, nn.Parameter):
+            pg1.append(v.weight)
+    optimizer = {
+        'adam': optim.Adam(pg0, Init_lr_fit, betas=(momentum, 0.999)),
+        'sgd': optim.SGD(pg0, Init_lr_fit, momentum=momentum, nesterov=True)
+    }[optimizer_type]
+    optimizer.add_param_group({"params": pg1, "weight_decay": weight_decay})
+    optimizer.add_param_group({"params": pg2})
 
-        close_mosaic_unfreeze = int(remaining * (1.0 - special_aug_ratio)) if mosaic else 0
-        model = YOLO(last_pt)
-        _setup_callbacks(model, save_phase_ckpt=False)
-        phase2_args = dict(
-            **train_args,
-            name=unfreeze_train_name,
-            epochs=remaining,
-            batch=Unfreeze_batch_size,
-            warmup_epochs=0 if resume_phase2 else 3.0,
-            close_mosaic=close_mosaic_unfreeze,
-            freeze=None,
-            resume=resume_phase2,
-        )
-        if resume_phase2:
-            with torch_load_weights_only_false():
-                model.train(**phase2_args)
-        else:
-            model.train(**phase2_args)
-        final_save_dir = str(model.trainer.save_dir)
-    elif freeze_save_dir is not None:
-        final_save_dir = freeze_save_dir
-    else:
-        final_save_dir = None
+    #---------------------------------------#
+    #   获得学习率下降的公式
+    #---------------------------------------#
+    lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
 
-    if final_save_dir:
-        print(f"\nTraining complete. Results saved in {final_save_dir}")
-    else:
-        print(f"\nTraining complete.")
+    #---------------------------------------#
+    #   判断每一个世代的长度
+    #---------------------------------------#
+    epoch_step = num_train // batch_size
+    epoch_step_val = num_val // batch_size
+
+    if epoch_step == 0 or epoch_step_val == 0:
+        raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
+
+    if ema:
+        ema.updates = epoch_step * Init_Epoch
+
+    #---------------------------------------#
+    #   构建数据集加载器。
+    #---------------------------------------#
+    gen = DataLoader(train_dataset, shuffle=True, batch_size=batch_size,
+                     num_workers=num_workers, pin_memory=True, drop_last=True,
+                     collate_fn=getattr(train_dataset, 'collate_fn', None),
+                     worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
+    gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size,
+                         num_workers=num_workers, pin_memory=True, drop_last=True,
+                         collate_fn=getattr(val_dataset, 'collate_fn', None),
+                         worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
+
+    #---------------------------------------#
+    #   构建训练用的 val_lines 和 eval callback
+    #---------------------------------------#
+    # 从 val_dataset 获取图片路径列表用于评估
+    val_lines = []
+    if eval_flag:
+        # 构建简单的 val_lines 格式: "image_path x1,y1,x2,y2,cls_id"
+        val_img_dir = os.path.join(val_path, 'images')
+        val_lbl_dir = os.path.join(val_path, 'labels')
+        if os.path.isdir(val_img_dir) and os.path.isdir(val_lbl_dir):
+            import glob
+            for img_path in sorted(glob.glob(os.path.join(val_img_dir, '*.[jJ][pP][gG]'))):
+                lbl_path = os.path.join(val_lbl_dir,
+                                        os.path.splitext(os.path.basename(img_path))[0] + '.txt')
+                boxes_str = []
+                if os.path.isfile(lbl_path):
+                    with open(lbl_path, 'r') as f:
+                        for line in f.readlines():
+                            parts = line.strip().split()
+                            if parts:
+                                cls_id = int(float(parts[0]))
+                                # YOLO 格式: cls x_center y_center w h (normalized)
+                                # 转为: x1,y1,x2,y2,cls
+                                if len(parts) >= 5:
+                                    x, y, w, h = [float(p) for p in parts[1:5]]
+                                    # 转为像素坐标 (假设图片 640x640)
+                                    x1 = int((x - w / 2) * input_shape[1])
+                                    y1 = int((y - h / 2) * input_shape[0])
+                                    x2 = int((x + w / 2) * input_shape[1])
+                                    y2 = int((y + h / 2) * input_shape[0])
+                                    boxes_str.append(f"{x1},{y1},{x2},{y2},{cls_id}")
+                val_lines.append(f"{img_path} {' '.join(boxes_str)}")
+
+    eval_callback = EvalCallback(
+        model, input_shape, class_names, num_classes, val_lines, log_dir,
+        Cuda, eval_flag=eval_flag, period=save_period)
+
+    #---------------------------------------#
+    #   开始模型训练
+    #---------------------------------------#
+    from utils.utils_fit import fit_one_epoch
+
+    for epoch in range(Init_Epoch, UnFreeze_Epoch):
+        #---------------------------------------#
+        #   如果模型有冻结学习部分
+        #   则解冻，并设置参数
+        #---------------------------------------#
+        if epoch >= Freeze_Epoch and not UnFreeze_flag and Freeze_Train:
+            batch_size = Unfreeze_batch_size
+
+            #-------------------------------------------------------------------#
+            #   判断当前batch_size，自适应调整学习率
+            #-------------------------------------------------------------------#
+            nbs = 64
+            lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
+            lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
+            Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+            Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+            lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
+
+            for param in model.backbone.parameters():
+                param.requires_grad = True
+
+            epoch_step = num_train // batch_size
+            epoch_step_val = num_val // batch_size
+
+            if epoch_step == 0 or epoch_step_val == 0:
+                raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
+
+            if ema:
+                ema.updates = epoch_step * epoch
+
+            gen = DataLoader(train_dataset, shuffle=True, batch_size=batch_size,
+                             num_workers=num_workers, pin_memory=True, drop_last=True,
+                             collate_fn=getattr(train_dataset, 'collate_fn', None),
+                             worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
+            gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size,
+                                 num_workers=num_workers, pin_memory=True, drop_last=True,
+                                 collate_fn=getattr(val_dataset, 'collate_fn', None),
+                                 worker_init_fn=partial(worker_init_fn, rank=0, seed=seed))
+
+            UnFreeze_flag = True
+
+        set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
+
+        fit_one_epoch(model_train, model, ema, yolo_loss, loss_history,
+                      eval_callback, optimizer, epoch, epoch_step,
+                      epoch_step_val, gen, gen_val, UnFreeze_Epoch,
+                      Cuda, fp16, scaler, save_period, log_dir)
+
+    loss_history.writer.close()
