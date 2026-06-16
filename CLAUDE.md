@@ -5,19 +5,17 @@ code in this repository.
 
 ## Project Overview
 
-YOLO26 is a local training and inference project for YOLO26 detection and
-instance segmentation models. The project uses Ultralytics model and dataset
-components, but the current training entry point is a custom loop, not a thin
-`ultralytics.YOLO.train()` wrapper.
+YOLO26 is a local training, prediction, export, and validation project for
+YOLO26 detection and instance segmentation models. The project now uses the
+official Ultralytics wrappers as the runtime architecture:
 
-YOLO26 traits used by this codebase:
+- `train.py` calls `ultralytics.YOLO.train()`.
+- `predict.py` calls `ultralytics.YOLO.predict()` and `YOLO.export()`.
+- `get_map.py` calls `ultralytics.YOLO.val()`.
 
-- NMS-free style end-to-end head with `one2one` and `one2many` branches.
-- DFL-free box regression for YOLO26 checkpoints with `reg_max=1`.
-- Training loss reads the `one2many` branch.
-- Inference decodes the `one2one` branch.
-- Classification heads are replaced in `train.py` when the dataset class count
-  differs from the pretrained checkpoint.
+Keep this official-wrapper architecture in place. Do not reintroduce custom
+dataloaders, loss, EMA, decode, NMS, or mAP code unless the user explicitly asks
+for a non-official architecture.
 
 ## Commands
 
@@ -32,7 +30,7 @@ python scripts/prepare_yolo_dataset.py --source dataset --output datasets --task
 # Train. Edit the config block in train.py first.
 python train.py
 
-# Predict. Edit yolo.py _defaults first.
+# Predict or export. Edit the config block in predict.py first.
 python predict.py
 
 # Validate mAP through official Ultralytics validation
@@ -40,7 +38,7 @@ python get_map.py
 
 # Run tests
 python -m pytest -q
-python -m compileall -q train.py utils\utils_fit.py get_map.py scripts
+python -m compileall -q train.py get_map.py predict.py scripts tests
 ```
 
 ## Dataset Layout
@@ -79,92 +77,59 @@ and `--task detect` for bbox labels. It can also sample with `--sample-count`.
 
 Current training architecture:
 
-- Loads model weights through `ultralytics.YOLO(model_path).model`.
-- Reads class names and `nc` from `datasets/datasets.yaml` via
-  `utils.get_classes`.
-- If `num_classes != model.nc`, replaces classification heads under both
-  `head.one2many["cls_head"]` and `head.one2one["cls_head"]`.
-- Builds datasets with `ultralytics.data.build.build_yolo_dataset`.
-- Uses PyTorch `DataLoader` with the dataset-provided `collate_fn`.
-- Uses `nets.yolo_training.Loss`, `ModelEMA`, `get_lr_scheduler`, and
-  `set_optimizer_lr`.
-- Runs one epoch at a time through `utils.utils_fit.fit_one_epoch`.
-- Saves `.pth` checkpoints under `logs/loss_<timestamp>/`.
+- Config values live near the top of `train.py`.
+- `require_existing_file()` checks local dataset and model paths.
+- `build_train_kwargs()` maps local config names to official Ultralytics train
+  arguments.
+- `run_training()` loads `YOLO(model_path)` and returns
+  `model.train(**train_kwargs)`.
+- Ultralytics owns dataset construction, augmentation, optimization,
+  checkpointing, validation, freeze handling, resume behavior, and metrics.
 
-Two-stage freeze/unfreeze training is still present. Ultralytics models in this
-project do not expose `.backbone`, so freezing and unfreezing are implemented by
-matching parameter names with prefixes `model.0.` through `model.9.`.
+Important path behavior:
 
-`optimizer_type="auto"` resolves to SGD for longer runs and AdamW for shorter
-runs. Adam-family optimizers must receive `betas`, not `momentum`.
+- `project = None` preserves the official `runs/<task>/<name>` layout.
+- Do not set `project = "runs"` as a default. In this installed Ultralytics
+  version, relative project values become
+  `runs/<task>/<project>/<name>`.
 
-Resume helper functions are defined at module scope for tests and future resume
-work:
+For resume, set `resume = True` and point `model_path` at an official
+Ultralytics `last.pt` checkpoint.
 
-- `torch_load_weights_only_false()`
-- `phase_train_names()`
-- `find_latest_resume_checkpoint()`
-- `phase2_checkpoint()`
-- `phase2_epochs()`
+### Prediction And Export (`predict.py`)
 
-The main training loop currently still saves local `.pth` state dict files; it
-does not resume Ultralytics `.pt` trainer checkpoints end-to-end.
+Current prediction architecture:
 
-### Training Batch Format (`utils/utils_fit.py`)
+- Config values live near the top of `predict.py`.
+- `common_predict_kwargs()` builds arguments for `YOLO.predict()`.
+- `export_kwargs()` builds arguments for `YOLO.export(format="onnx")`.
+- `run_mode()` dispatches `predict`, `video`, `fps`, `dir_predict`, and
+  `export_onnx`.
+- Ultralytics owns preprocessing, postprocessing, rendering, artifact paths, and
+  export internals.
 
-Ultralytics datasets yield batch dictionaries. `fit_one_epoch` converts them to
-the local loss format:
-
-```text
-batch["img"] -> float tensor in [0, 1]
-batch["batch_idx"], batch["cls"], batch["bboxes"] -> [N, 6]
-```
-
-The local loss expects `[batch_idx, cls, x, y, w, h]`.
-
-### Loss (`nets/yolo_training.py`)
-
-`Loss` expects YOLO26 model outputs shaped as a dictionary with an `one2many`
-branch:
-
-- `outputs["one2many"]["boxes"]`
-- `outputs["one2many"]["scores"]`
-- `outputs["one2many"]["feats"]`
-
-It uses task-aligned assignment, CIoU box loss, BCE class loss, and no DFL for
-YOLO26 `reg_max=1` models.
-
-### Inference (`yolo.py`)
-
-`YOLO` wraps `ultralytics.YOLO(...).model` for local inference. Methods:
-
-- `detect_image(image, crop, count)`
-- `get_FPS(image, test_interval)`
-- `detect_heatmap(image, save_path)`
-- `convert_to_onnx(simplify, path)`
-
-Inference uses `utils.utils_bbox.DecodeBox`, Chinese font rendering through
-`model_data/simhei.ttf`, and modes configured in `predict.py`.
+Keep `project = None` by default for the standard run layout.
 
 ### Evaluation (`get_map.py`)
 
 `get_map.py` uses official `ultralytics.YOLO.val()`.
 
 `default_model_path()` prefers the latest
-`runs/<task>/logs/*_unfreeze/weights/best.pt`. If none exists, it falls back to
+`runs/<task>/*/weights/best.pt`. If none exists, it falls back to
 `model_data/yolo26n-seg.pt` for segmentation or `model_data/yolo26n.pt` for
 detection.
 
 ## Important Project Notes
 
 - There is currently no `config.py`; edit config blocks in `train.py`,
-  `yolo.py`, `predict.py`, and `get_map.py`.
-- Keep changes surgical. This repository is mid-refactor and tests may describe
-  intended helper contracts even when the main loop is still custom.
-- Do not replace the custom training loop with `YOLO.train()` unless the user
-  explicitly asks for that architecture change.
-- `model_data/`, `logs/`, `datasets/`, and local run outputs are environment
-  artifacts and may be ignored by git.
+  `predict.py`, and `get_map.py`.
+- Keep changes surgical. This repository has been refactored toward official
+  Ultralytics entry points, and tests focus on wrapper dispatch and helper
+  contracts.
+- Deleted local modules should stay deleted unless the user requests a
+  non-official architecture.
+- `model_data/`, `logs/`, `datasets/`, `runs/`, and local run outputs are
+  environment artifacts and may be ignored by git.
 
 ## Behavioral Guidelines
 

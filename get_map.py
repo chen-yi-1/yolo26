@@ -5,8 +5,8 @@ import torch
 from ultralytics import YOLO
 
 
-def default_model_path(task="segment", save_dir="logs"):
-    pattern = os.path.join("runs", task, save_dir, "*_unfreeze", "weights", "best.pt")
+def default_model_path(task="segment"):
+    pattern = os.path.join("runs", task, "*", "weights", "best.pt")
     candidates = glob.glob(pattern)
     if candidates:
         return max(candidates, key=os.path.getmtime)
@@ -25,7 +25,7 @@ if __name__ == "__main__":
     '''
     #------------------------------------------------------------------------------------------------------------------#
     #   此处的model_path用于指定要评估的模型权值文件
-    #   训练好后logs文件夹下存在多个权值文件，选择验证集损失较低的即可。
+    #   训练好后runs文件夹下存在多个权值文件，选择验证集损失较低的即可。
     #   验证集损失较低不代表mAP较高，仅代表该权值在验证集上泛化性能较好。
     #------------------------------------------------------------------------------------------------------------------#
     model_path      = default_model_path("segment")
