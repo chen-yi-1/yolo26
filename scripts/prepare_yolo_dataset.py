@@ -158,20 +158,30 @@ def sample_items(items, sample_percent, split, seed):
     return sampled
 
 
-def sample_items_fixed_count(label_files, sample_count, split, seed):
+def sample_items_fixed_count(label_files, sample_count, background_count, split, seed):
     """Sample fixed count per class - useful for imbalanced datasets."""
-    if sample_count is None or sample_count <= 0:
-        return label_files
-
-    # Group label files by their class ID
     class_groups = {}
+    background_labels = []
     for label_file in label_files:
         class_id = get_label_class_id(label_file)
-        if class_id is not None:
+        if class_id is None:
+            background_labels.append(label_file)
+        else:
             class_groups.setdefault(class_id, []).append(label_file)
 
     # Sample fixed count from each class
-    sampled = []
+    if background_count is not None and background_count >= 0 and len(background_labels) > background_count:
+        background_labels = random.Random(seed).sample(background_labels, background_count)
+    sampled = list(background_labels)
+    if background_labels:
+        print(f"  Keeping background labels: {len(background_labels)}")
+
+    if sample_count is None or sample_count <= 0:
+        for items in class_groups.values():
+            sampled.extend(items)
+        return sampled
+
+    # Sample fixed count from each class.
     for class_id, items in class_groups.items():
         actual_count = min(sample_count, len(items))
         class_sampled = random.Random(seed + class_id).sample(items, actual_count)
@@ -278,6 +288,7 @@ def prepare_yolo_dataset(
     yaml_path=None,
     sample_percent=None,
     sample_count=None,
+    background_count=None,
     task="segment",
     train_ratio=0.8,
     seed=42,
@@ -313,7 +324,7 @@ def prepare_yolo_dataset(
     reset_output_dir(output_dir)
 
     sampled_labels = sample_items(label_files, sample_percent, "all", seed)
-    sampled_labels = sample_items_fixed_count(sampled_labels, sample_count, "all", seed)
+    sampled_labels = sample_items_fixed_count(sampled_labels, sample_count, background_count, "all", seed)
     train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
     train_count, train_missing = copy_labelled_items(
         source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed
@@ -362,6 +373,12 @@ def parse_args():
         help="Fixed number of samples per class. Useful for imbalanced datasets. E.g., --sample-count 500 means 500 samples from each class.",
     )
     parser.add_argument(
+        "--background-count",
+        type=int,
+        default=None,
+        help="Maximum number of empty-label background samples to keep. Default keeps all background samples.",
+    )
+    parser.add_argument(
         "--train-ratio",
         type=float,
         default=0.8,
@@ -389,6 +406,7 @@ def main():
         args.output,
         args.yaml,
         sample_count=args.sample_count,
+        background_count=args.background_count,
         task=args.task,
         train_ratio=args.train_ratio,
         seed=args.seed,
