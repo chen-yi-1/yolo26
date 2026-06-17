@@ -9,6 +9,7 @@ lfw/
 logs/
 runs/
 .temp_map_out/
+web_uploads/
 dataset/
 raw_datas/
 docs/

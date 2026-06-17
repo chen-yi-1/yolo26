@@ -15,15 +15,16 @@ from ultralytics import YOLO
 #   "fps"         — 测试模型推理速度（FPS）
 #   "dir_predict" — 批量预测目录下所有图片
 #   "export_onnx" — 将 PyTorch 模型导出为 ONNX 格式
+#   "web"         — 启动 Web 服务器，在浏览器上传图片并查看预测结果
 #   根据需求选择对应的模式，不同模式使用下方对应的配置参数。
 #------------------------------------------------------------------------------------------------------------------#
-mode = "export_onnx"
+mode = "web"
 #------------------------------------------------------------------------------------------------------------------#
 #   model_path: 模型权值文件路径
 #   可以是本地 .pt 文件路径，也可以是官方模型名称。
 #   预测时使用的权值应与训练时的任务类型（detect/segment）一致。
 #------------------------------------------------------------------------------------------------------------------#
-model_path = r"C:\Users\EDY\Downloads\best.pt"
+model_path = r"C:\Users\EDY\Downloads\best_x.pt"
 #------------------------------------------------------------------------------------------------------------------#
 #   input_shape: 网络输入尺寸，必须是 32 的倍数
 #   预测时会将输入图片缩放到此尺寸进行推理。
@@ -141,6 +142,15 @@ dir_origin_path = "img/"
 simplify = True
 dynamic = False
 opset = None
+#------------------------------------------------------------------------------------------------------------------#
+#   web 模式配置
+#   web_host: Web 服务器监听地址
+#   "127.0.0.1" — 仅本机可访问
+#   "0.0.0.0"   — 局域网内其他设备也可访问
+#   web_port: Web 服务器监听端口
+#------------------------------------------------------------------------------------------------------------------#
+web_host = "0.0.0.0"
+web_port = 8081
 
 
 def common_predict_kwargs(save):
@@ -195,6 +205,106 @@ def run_fps(model):
     return tact_time
 
 
+def run_web(model):
+    """启动 Web 服务器，通过浏览器上传图片并显示预测结果"""
+    import base64
+    import uuid
+    from pathlib import Path
+    from fastapi import FastAPI, UploadFile, File
+    from fastapi.responses import HTMLResponse
+    import uvicorn
+    import cv2
+
+    app = FastAPI(title="YOLO26 Web 预测")
+
+    HTML_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>YOLO26 图片预测</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; text-align: center; background: #f5f5f5; }
+h1 { color: #222; font-size: 24px; }
+.card { background: #fff; border-radius: 12px; padding: 30px; box-shadow: 0 2px 12px rgba(0,0,0,.08); margin: 20px 0; }
+.upload-row { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+input[type=file] { padding: 8px; }
+button { padding: 10px 28px; background: #4a90d9; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; }
+button:hover { background: #357abd; }
+.images { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+.images div { flex: 1; min-width: 280px; }
+.images img { max-width: 100%; border-radius: 8px; border: 1px solid #ddd; }
+.label { font-weight: 600; margin: 10px 0; color: #555; }
+#loading { display: none; margin: 20px; color: #888; }
+#error { color: #c00; margin: 10px; }
+</style>
+</head>
+<body>
+<h1>YOLO26 图片预测</h1>
+<div class="card">
+<div class="upload-row">
+<input type="file" id="imageInput" accept="image/*">
+<button onclick="predict()">开始预测</button>
+</div>
+</div>
+<div id="loading">⏳ 正在预测中...</div>
+<div id="error"></div>
+<div class="images" id="results" style="display:none">
+<div><div class="label">原始图片</div><img id="originalImg"></div>
+<div><div class="label">预测结果</div><img id="predictedImg"></div>
+</div>
+<script>
+async function predict() {
+  const f = document.getElementById('imageInput').files[0];
+  if (!f) { alert('请先选择一张图片'); return; }
+  document.getElementById('loading').style.display = '';
+  document.getElementById('error').textContent = '';
+  document.getElementById('results').style.display = 'none';
+  const fd = new FormData(); fd.append('file', f);
+  try {
+    const r = await fetch('/predict', { method:'POST', body:fd });
+    const d = await r.json();
+    document.getElementById('originalImg').src = 'data:image/jpeg;base64,' + d.original;
+    document.getElementById('predictedImg').src = 'data:image/jpeg;base64,' + d.predicted;
+    document.getElementById('results').style.display = 'flex';
+  } catch(e) {
+    document.getElementById('error').textContent = '预测失败：' + e.message;
+  }
+  document.getElementById('loading').style.display = 'none';
+}
+</script>
+</body>
+</html>"""
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        return HTML_PAGE
+
+    @app.post("/predict")
+    async def predict(file: UploadFile = File(...)):
+        contents = await file.read()
+
+        upload_dir = Path("web_uploads")
+        upload_dir.mkdir(exist_ok=True)
+        suffix = Path(file.filename).suffix if file.filename else ".jpg"
+        temp_path = upload_dir / f"{uuid.uuid4().hex}{suffix}"
+        temp_path.write_bytes(contents)
+
+        try:
+            results = model.predict(source=str(temp_path), **common_predict_kwargs(save=False))
+            plot_arr = results[0].plot()
+            _, buffer = cv2.imencode(".jpg", plot_arr)
+            predicted_b64 = base64.b64encode(buffer).decode("utf-8")
+            original_b64 = base64.b64encode(contents).decode("utf-8")
+            return {"original": original_b64, "predicted": predicted_b64}
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    print(f"[Info] Web 服务器已启动：http://{web_host}:{web_port}")
+    print("[Info] 请在浏览器中打开以上地址上传图片进行预测")
+    uvicorn.run(app, host=web_host, port=web_port, log_level="info")
+
+
 def run_mode(selected_mode=mode):
     model = YOLO(model_path)
 
@@ -208,9 +318,11 @@ def run_mode(selected_mode=mode):
         return model.predict(source=dir_origin_path, **common_predict_kwargs(save=True))
     if selected_mode == "export_onnx":
         return model.export(**export_kwargs())
+    if selected_mode == "web":
+        return run_web(model)
 
     raise AssertionError(
-        "Please specify the correct mode: 'predict', 'video', 'fps', 'export_onnx', 'dir_predict'."
+        "Please specify the correct mode: 'predict', 'video', 'fps', 'export_onnx', 'dir_predict', 'web'."
     )
 
 

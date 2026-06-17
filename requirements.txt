@@ -11,3 +11,5 @@ tqdm
 Pillow
 h5py
 thop
+fastapi
+uvicorn
