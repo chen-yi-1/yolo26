@@ -13,6 +13,7 @@ web_uploads/
 dataset/
 raw_datas/
 docs/
+*.zip
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

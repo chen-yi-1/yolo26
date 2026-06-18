@@ -369,13 +369,13 @@ def parse_args():
     parser.add_argument(
         "--sample-count",
         type=int,
-        default=200,
+        default=None,
         help="Fixed number of samples per class. Useful for imbalanced datasets. E.g., --sample-count 500 means 500 samples from each class.",
     )
     parser.add_argument(
         "--background-count",
         type=int,
-        default=None,
+        default=0,
         help="Maximum number of empty-label background samples to keep. Default keeps all background samples.",
     )
     parser.add_argument(
