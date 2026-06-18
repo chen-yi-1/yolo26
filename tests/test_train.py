@@ -24,6 +24,9 @@ def test_build_train_kwargs_includes_augmentation_parameters():
         resume=False,
         optimizer="auto",
         lr0=0.001,
+        box=7.5,
+        cls=1.0,
+        dfl=1.5,
         patience=20,
         save_period=10,
         amp=True,
@@ -54,6 +57,9 @@ def test_build_train_kwargs_includes_augmentation_parameters():
         class_weights=None,
     )
 
+    assert kwargs["box"] == 7.5
+    assert kwargs["cls"] == 1.0
+    assert kwargs["dfl"] == 1.5
     assert kwargs["hsv_h"] == 0.015
     assert kwargs["hsv_s"] == 0.7
     assert kwargs["hsv_v"] == 0.4
@@ -92,6 +98,9 @@ def test_build_train_kwargs_rejects_class_weights():
             resume=False,
             optimizer="auto",
             lr0=0.001,
+            box=7.5,
+            cls=1.0,
+            dfl=1.5,
             patience=20,
             save_period=10,
             amp=True,

@@ -18,6 +18,7 @@ docs/
 __pycache__/
 *.py[cod]
 *$py.class
+models/
 
 # C extensions
 *.so

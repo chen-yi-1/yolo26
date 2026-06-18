@@ -82,6 +82,16 @@ optimizer = "auto"
 #------------------------------------------------------------------------------------------------------------------#
 lr0 = 0.001
 #------------------------------------------------------------------------------------------------------------------#
+#   box / cls / dfl: 损失函数权重
+#   官方默认值：box=7.5，cls=0.5，dfl=1.5
+#   box 控制边界框回归损失权重，cls 控制分类损失权重，dfl 控制分布焦点损失权重。
+#   如果更关注 abnormal/healthy 分类是否正确，可小幅提高 cls，例如 1.0 或 1.5。
+#   不建议一次调得过大，否则可能降低定位质量或加重类别过拟合。
+#------------------------------------------------------------------------------------------------------------------#
+box = 7.5
+cls = 1.0
+dfl = 1.5
+#------------------------------------------------------------------------------------------------------------------#
 #   patience: Early Stopping 耐心值
 #   验证集损失连续 patience 轮没有下降时，提前终止训练。
 #   设为 0 表示不启用 early stopping。
@@ -308,6 +318,9 @@ def build_train_kwargs(
     resume,
     optimizer,
     lr0,
+    box,
+    cls,
+    dfl,
     patience,
     save_period,
     amp,
@@ -357,6 +370,9 @@ def build_train_kwargs(
         "resume": resume,
         "optimizer": optimizer,
         "lr0": lr0,
+        "box": box,
+        "cls": cls,
+        "dfl": dfl,
         "patience": patience,
         "save_period": save_period,
         "amp": amp,
@@ -413,6 +429,9 @@ def run_training():
         resume=resume,
         optimizer=optimizer,
         lr0=lr0,
+        box=box,
+        cls=cls,
+        dfl=dfl,
         patience=patience,
         save_period=save_period,
         amp=amp,
