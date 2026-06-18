@@ -287,18 +287,16 @@ async function predict() {
         upload_dir = Path("web_uploads")
         upload_dir.mkdir(exist_ok=True)
         suffix = Path(file.filename).suffix if file.filename else ".jpg"
-        temp_path = upload_dir / f"{uuid.uuid4().hex}{suffix}"
-        temp_path.write_bytes(contents)
+        filename = file.filename if file.filename else f"{uuid.uuid4().hex}{suffix}"
+        save_path = upload_dir / filename
+        save_path.write_bytes(contents)
 
-        try:
-            results = model.predict(source=str(temp_path), **common_predict_kwargs(save=False))
-            plot_arr = results[0].plot()
-            _, buffer = cv2.imencode(".jpg", plot_arr)
-            predicted_b64 = base64.b64encode(buffer).decode("utf-8")
-            original_b64 = base64.b64encode(contents).decode("utf-8")
-            return {"original": original_b64, "predicted": predicted_b64}
-        finally:
-            temp_path.unlink(missing_ok=True)
+        results = model.predict(source=str(save_path), **common_predict_kwargs(save=False))
+        plot_arr = results[0].plot()
+        _, buffer = cv2.imencode(".jpg", plot_arr)
+        predicted_b64 = base64.b64encode(buffer).decode("utf-8")
+        original_b64 = base64.b64encode(contents).decode("utf-8")
+        return {"original": original_b64, "predicted": predicted_b64}
 
     print(f"[Info] Web 服务器已启动：http://{web_host}:{web_port}")
     print("[Info] 请在浏览器中打开以上地址上传图片进行预测")
