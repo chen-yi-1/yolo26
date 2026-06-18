@@ -17,6 +17,7 @@ The json files are left in the source tree untouched for visualization/editing.
 """
 
 import argparse
+import math
 import random
 import shutil
 from pathlib import Path
@@ -227,11 +228,70 @@ def get_label_class_id(label_path):
     return None
 
 
+def resolve_class_id(class_name_or_id, names):
+    if class_name_or_id is None:
+        return None
+    try:
+        class_id = int(class_name_or_id)
+    except ValueError:
+        if class_name_or_id not in names:
+            raise ValueError(f"Unknown oversample class: {class_name_or_id}")
+        return names.index(class_name_or_id)
+    if class_id < 0 or class_id >= len(names):
+        raise ValueError(f"oversample class id {class_id} is outside 0..{len(names) - 1}")
+    return class_id
+
+
+def oversample_training_labels(label_files, class_id, target_ratio, seed):
+    if class_id is None:
+        return [(label_file, None) for label_file in label_files]
+    if target_ratio <= 0:
+        raise ValueError(f"oversample_target_ratio must be > 0, got: {target_ratio}")
+
+    class_groups = {}
+    for label_file in label_files:
+        label_class_id = get_label_class_id(label_file)
+        if label_class_id is not None:
+            class_groups.setdefault(label_class_id, []).append(label_file)
+
+    target_items = class_groups.get(class_id, [])
+    if not target_items:
+        return [(label_file, None) for label_file in label_files]
+
+    other_counts = [
+        len(items)
+        for label_class_id, items in class_groups.items()
+        if label_class_id != class_id
+    ]
+    if not other_counts:
+        return [(label_file, None) for label_file in label_files]
+
+    desired_count = math.ceil(max(other_counts) * target_ratio)
+    duplicate_count = max(0, desired_count - len(target_items))
+    oversampled = [(label_file, None) for label_file in label_files]
+    rng = random.Random(seed)
+    for index in range(duplicate_count):
+        label_file = rng.choice(target_items)
+        oversampled.append((label_file, f"_os{index + 1:03d}"))
+
+    if duplicate_count:
+        print(
+            f"  Oversampling class {class_id}: "
+            f"{len(target_items)} -> {len(target_items) + duplicate_count}"
+        )
+    return oversampled
+
+
 def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed):
     copied = 0
     missing_images = []
 
-    for label_src in label_files:
+    for label_item in label_files:
+        if isinstance(label_item, tuple):
+            label_src, name_suffix = label_item
+        else:
+            label_src, name_suffix = label_item, None
+
         validate_yolo_label(label_src, len(names), task)
         
         # Get class ID from label file
@@ -257,8 +317,9 @@ def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, 
             missing_images.append(label_src.stem)
             continue
 
-        image_dst = Path(output_dir) / "images" / split / image_src.name
-        label_dst = Path(output_dir) / "labels" / split / label_src.name
+        dst_stem = f"{label_src.stem}{name_suffix or ''}"
+        image_dst = Path(output_dir) / "images" / split / f"{dst_stem}{image_src.suffix}"
+        label_dst = Path(output_dir) / "labels" / split / f"{dst_stem}{label_src.suffix}"
         image_dst.parent.mkdir(parents=True, exist_ok=True)
         label_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(image_src, image_dst)
@@ -289,6 +350,8 @@ def prepare_yolo_dataset(
     sample_percent=None,
     sample_count=None,
     background_count=None,
+    oversample_class=None,
+    oversample_target_ratio=1.0,
     task="segment",
     train_ratio=0.8,
     seed=42,
@@ -326,6 +389,13 @@ def prepare_yolo_dataset(
     sampled_labels = sample_items(label_files, sample_percent, "all", seed)
     sampled_labels = sample_items_fixed_count(sampled_labels, sample_count, background_count, "all", seed)
     train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
+    oversample_class_id = resolve_class_id(oversample_class, names)
+    train_labels = oversample_training_labels(
+        train_labels,
+        oversample_class_id,
+        oversample_target_ratio,
+        seed,
+    )
     train_count, train_missing = copy_labelled_items(
         source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed
     )
@@ -379,6 +449,17 @@ def parse_args():
         help="Maximum number of empty-label background samples to keep. Default keeps all background samples.",
     )
     parser.add_argument(
+        "--oversample-class",
+        default=None,
+        help="Class name or id to duplicate in the training split, e.g. abnormal or 0.",
+    )
+    parser.add_argument(
+        "--oversample-target-ratio",
+        type=float,
+        default=1.0,
+        help="Target ratio against the largest other class in train split (default: 1.0).",
+    )
+    parser.add_argument(
         "--train-ratio",
         type=float,
         default=0.8,
@@ -407,6 +488,8 @@ def main():
         args.yaml,
         sample_count=args.sample_count,
         background_count=args.background_count,
+        oversample_class=args.oversample_class,
+        oversample_target_ratio=args.oversample_target_ratio,
         task=args.task,
         train_ratio=args.train_ratio,
         seed=args.seed,

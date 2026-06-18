@@ -105,3 +105,44 @@ def test_prepare_dataset_limits_backgrounds_without_class_sampling(tmp_path):
     copied_backgrounds = list((output / "labels" / "train").glob("background_*.txt"))
     assert result["train"] == 2
     assert len(copied_backgrounds) == 1
+
+
+def test_prepare_dataset_oversamples_training_class_to_target_ratio(tmp_path):
+    source = tmp_path / "dataset"
+    output = tmp_path / "datasets"
+    write_file(source / "classes.txt", "abnormal\nhealthy\n")
+
+    for stem, folder in (
+        ("abnormal_a", "abnormal"),
+        ("healthy_a", "healthy"),
+        ("healthy_b", "healthy"),
+        ("healthy_c", "healthy"),
+    ):
+        image_path = source / folder / f"{stem}.jpg"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(b"fake image bytes")
+
+    write_file(source / "labels" / "abnormal_a.txt", "0 0.5 0.5 0.2 0.2\n")
+    write_file(source / "labels" / "healthy_a.txt", "1 0.5 0.5 0.2 0.2\n")
+    write_file(source / "labels" / "healthy_b.txt", "1 0.5 0.5 0.2 0.2\n")
+    write_file(source / "labels" / "healthy_c.txt", "1 0.5 0.5 0.2 0.2\n")
+
+    result = prepare_yolo_dataset(
+        source,
+        output,
+        oversample_class="abnormal",
+        oversample_target_ratio=1.0,
+        task="detect",
+        train_ratio=1.0,
+        seed=3,
+    )
+
+    train_labels = sorted(path.name for path in (output / "labels" / "train").glob("*.txt"))
+    assert result["train"] == 6
+    assert train_labels.count("abnormal_a.txt") == 1
+    assert "abnormal_a_os001.txt" in train_labels
+    assert "abnormal_a_os002.txt" in train_labels
+    assert (output / "images" / "train" / "abnormal_a_os001.jpg").is_file()
+    assert (output / "labels" / "train" / "abnormal_a_os001.txt").read_text(encoding="utf-8") == (
+        output / "labels" / "train" / "abnormal_a.txt"
+    ).read_text(encoding="utf-8")

@@ -38,7 +38,7 @@ python get_map.py
 
 # Run tests
 python -m pytest -q
-python -m compileall -q train.py get_map.py predict.py scripts tests
+python -m compileall -q train.py get_map.py predict.py scripts utils tests
 ```
 
 ## Dataset Layout

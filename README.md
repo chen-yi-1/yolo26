@@ -77,6 +77,16 @@ The script validates labels, copies matching images, writes
 `datasets/datasets.yaml`. Use `--sample-count` to sample a fixed count per
 class.
 
+For imbalanced abnormal/healthy training data, oversample the minority class in
+the training split only:
+
+```bash
+python scripts/prepare_yolo_dataset.py --source dataset --output datasets --task detect --oversample-class abnormal --oversample-target-ratio 1.0
+```
+
+`--oversample-target-ratio 1.0` duplicates `abnormal` training samples until
+they match the largest other class count. Validation data is not oversampled.
+
 ## Training
 
 Edit the configuration block in `train.py`, then run:
@@ -84,6 +94,10 @@ Edit the configuration block in `train.py`, then run:
 ```bash
 python train.py
 ```
+
+During training, `train.py` reads the run directory `results.csv` after each
+epoch update and overwrites `training_summary.png` next to it for a quick visual
+check of train loss, validation loss, validation metrics, and learning rate.
 
 Current training behavior:
 
@@ -170,7 +184,7 @@ Edit `data_yaml`, `input_shape`, `confidence`, `nms_iou`, and `split` in
 
 ```bash
 python -m pytest -q
-python -m compileall -q train.py get_map.py predict.py scripts tests
+python -m compileall -q train.py get_map.py predict.py scripts utils tests
 ```
 
 ## Key Files
@@ -180,5 +194,7 @@ python -m compileall -q train.py get_map.py predict.py scripts tests
 | `train.py` | Official Ultralytics training wrapper |
 | `predict.py` | Official prediction, video, FPS, directory prediction, and ONNX export wrapper |
 | `get_map.py` | Official Ultralytics validation entry point |
+| `utils/training_plots.py` | Training `results.csv` plotting and epoch callback helpers |
+| `utils/predict_runner.py` | Prediction/export/FPS/Web helper functions used by `predict.py` |
 | `scripts/prepare_yolo_dataset.py` | Dataset conversion and validation |
 | `tests/` | Focused tests for wrapper dispatch and helper behavior |
