@@ -282,6 +282,18 @@ def oversample_training_labels(label_files, class_id, target_ratio, seed):
     return oversampled
 
 
+def count_classes(label_files, names):
+    """Count the number of samples per class from label files."""
+    class_counts = {idx: 0 for idx in range(len(names))}
+    for label_file in label_files:
+        if isinstance(label_file, tuple):
+            label_file = label_file[0]
+        class_id = get_label_class_id(label_file)
+        if class_id is not None and class_id < len(names):
+            class_counts[class_id] += 1
+    return class_counts
+
+
 def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed):
     copied = 0
     missing_images = []
@@ -405,9 +417,17 @@ def prepare_yolo_dataset(
     missing = train_missing + val_missing
     write_dataset_yaml(yaml_path, output_dir, names)
 
+    # Count classes for train and val splits
+    train_class_counts = count_classes(train_labels, names)
+    val_class_counts = count_classes(val_labels, names)
+
     print(f"Prepared YOLO {task} dataset: {output_dir}")
     print(f"  train: {train_count} images (with labels)")
+    for idx, name in enumerate(names):
+        print(f"    class {idx} ({name}): {train_class_counts[idx]}")
     print(f"  val:   {val_count} images (with labels)")
+    for idx, name in enumerate(names):
+        print(f"    class {idx} ({name}): {val_class_counts[idx]}")
     print(f"  yaml:  {yaml_path}")
     if missing:
         print(f"  warning: {len(missing)} items have no matching image/json, skipped:")
@@ -451,12 +471,13 @@ def parse_args():
     parser.add_argument(
         "--oversample-class",
         default=0,
+        default=0,
         help="Class name or id to duplicate in the training split, e.g. abnormal or 0.",
     )
     parser.add_argument(
         "--oversample-target-ratio",
         type=float,
-        default=0.8,
+        default=0.6,
         help="Target ratio against the largest other class in train split (default: 1.0).",
     )
     parser.add_argument(
