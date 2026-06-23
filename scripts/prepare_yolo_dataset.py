@@ -471,6 +471,7 @@ def parse_args():
     parser.add_argument(
         "--oversample-class",
         default=0,
+        default=0,
         help="Class name or id to duplicate in the training split, e.g. abnormal or 0.",
     )
     parser.add_argument(

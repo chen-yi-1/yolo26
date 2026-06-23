@@ -44,16 +44,65 @@ def build_export_kwargs(input_shape, simplify, dynamic, opset, device):
     }
 
 
-def run_interactive_predict(model, predict_source, save, predict_kwargs_factory, input_func=input):
+def display_prediction_windows(results, window_name="YOLO26 prediction"):
+    import cv2
+
+    for index, result in enumerate(results):
+        title = window_name if index == 0 else f"{window_name} {index + 1}"
+        cv2.imshow(title, result.plot())
+        cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+def _predict_kwargs(predict_kwargs_factory, save, hold_show):
+    kwargs = predict_kwargs_factory(save=save)
+    if hold_show:
+        kwargs["show"] = False
+    return kwargs
+
+
+def _predict_and_maybe_hold_window(model, source, save, predict_kwargs_factory, hold_show, display_func):
+    results = model.predict(
+        source=source,
+        **_predict_kwargs(predict_kwargs_factory, save, hold_show),
+    )
+    if hold_show:
+        display_func(results)
+    return results
+
+
+def run_interactive_predict(
+    model,
+    predict_source,
+    save,
+    predict_kwargs_factory,
+    input_func=input,
+    hold_show=False,
+    display_func=display_prediction_windows,
+):
     if predict_source:
-        return model.predict(source=predict_source, **predict_kwargs_factory(save=save))
+        return _predict_and_maybe_hold_window(
+            model,
+            predict_source,
+            save,
+            predict_kwargs_factory,
+            hold_show,
+            display_func,
+        )
 
     result = None
     while True:
         source = input_func("Input image filename:")
         if not source:
             break
-        result = model.predict(source=source, **predict_kwargs_factory(save=save))
+        result = _predict_and_maybe_hold_window(
+            model,
+            source,
+            save,
+            predict_kwargs_factory,
+            hold_show,
+            display_func,
+        )
     return result
 
 

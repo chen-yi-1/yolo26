@@ -1,4 +1,8 @@
-from utils.predict_runner import build_common_predict_kwargs, build_export_kwargs
+from utils.predict_runner import (
+    build_common_predict_kwargs,
+    build_export_kwargs,
+    run_interactive_predict,
+)
 
 
 def test_build_common_predict_kwargs_filters_none_project():
@@ -49,3 +53,34 @@ def test_build_export_kwargs_uses_official_onnx_format():
         "opset": None,
         "device": 0,
     }
+
+
+def test_run_interactive_predict_holds_window_and_disables_ultralytics_show():
+    class FakeResult:
+        pass
+
+    class FakeModel:
+        def __init__(self):
+            self.kwargs = None
+
+        def predict(self, **kwargs):
+            self.kwargs = kwargs
+            return [FakeResult()]
+
+    displayed = []
+
+    def predict_kwargs_factory(save):
+        return {"save": save, "show": True}
+
+    model = FakeModel()
+    result = run_interactive_predict(
+        model,
+        predict_source="image.jpg",
+        save=True,
+        predict_kwargs_factory=predict_kwargs_factory,
+        hold_show=True,
+        display_func=displayed.extend,
+    )
+
+    assert result == displayed
+    assert model.kwargs == {"source": "image.jpg", "save": True, "show": False}
