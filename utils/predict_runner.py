@@ -44,11 +44,14 @@ def build_export_kwargs(input_shape, simplify, dynamic, opset, device):
     }
 
 
-def display_prediction_windows(results, window_name="YOLO26 prediction"):
+def display_prediction_windows(results, window_name="YOLO26 prediction", window_size=(960, 720)):
     import cv2
 
+    width, height = window_size
     for index, result in enumerate(results):
         title = window_name if index == 0 else f"{window_name} {index + 1}"
+        cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(title, width, height)
         cv2.imshow(title, result.plot())
         cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -61,13 +64,21 @@ def _predict_kwargs(predict_kwargs_factory, save, hold_show):
     return kwargs
 
 
-def _predict_and_maybe_hold_window(model, source, save, predict_kwargs_factory, hold_show, display_func):
+def _predict_and_maybe_hold_window(
+    model,
+    source,
+    save,
+    predict_kwargs_factory,
+    hold_show,
+    display_window_size,
+    display_func,
+):
     results = model.predict(
         source=source,
         **_predict_kwargs(predict_kwargs_factory, save, hold_show),
     )
     if hold_show:
-        display_func(results)
+        display_func(results, window_size=display_window_size)
     return results
 
 
@@ -78,6 +89,7 @@ def run_interactive_predict(
     predict_kwargs_factory,
     input_func=input,
     hold_show=False,
+    display_window_size=(960, 720),
     display_func=display_prediction_windows,
 ):
     if predict_source:
@@ -87,12 +99,13 @@ def run_interactive_predict(
             save,
             predict_kwargs_factory,
             hold_show,
+            display_window_size,
             display_func,
         )
 
     result = None
     while True:
-        source = input_func("Input image filename:")
+        source = input_func("Input image filename:").strip('\'"')
         if not source:
             break
         result = _predict_and_maybe_hold_window(
@@ -101,6 +114,7 @@ def run_interactive_predict(
             save,
             predict_kwargs_factory,
             hold_show,
+            display_window_size,
             display_func,
         )
     return result
