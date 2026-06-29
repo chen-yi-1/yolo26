@@ -1,0 +1,49 @@
+[package]
+name = "yolo26-rust-inference"
+version = "0.1.0"
+edition = "2021"
+description = "YOLO26 ONNX 推理脚本 — 基于 ultralytics-inference crate"
+
+[dependencies]
+# 核心推理库（默认启用 annotate + visualize 功能）
+ultralytics-inference = { version = "0.0.23", features = ["video"] }
+
+# 如果要启用 GPU 加速，取消下面的注释并注释上面那行：
+# ── NVIDIA GPU ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "nvidia"] }
+# ── 或者仅 CUDA ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "cuda"] }
+# ── 或者 CUDA + TensorRT ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "cuda", "tensorrt"] }
+# ── Apple Silicon (macOS) ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "coreml"] }
+# ── Intel GPU / OpenVINO ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "openvino"] }
+# ── Windows DirectML ──
+# ultralytics-inference = { version = "0.0.23", features = ["video", "directml"] }
+
+# 命令行参数解析
+clap = { version = "4", features = ["derive"] }
+
+# 错误处理
+anyhow = "1"
+
+# 图片加载与保存
+image = "0.25"
+
+# 弹窗选择文件/文件夹
+rfd = "0.15"
+
+# Web 服务
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http = { version = "0.6", features = ["cors", "limit"] }
+base64 = "0.22"
+urlencoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

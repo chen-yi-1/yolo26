@@ -1,0 +1,7 @@
+# 自动设置 FFmpeg 和 libclang 环境变量
+# 所有 cargo 命令（build/run/test）都会自动加载
+# 注意：需在 rust-inference/ 目录下执行 cargo 命令，相对路径才会正确解析
+
+[env]
+FFMPEG_DIR = { value = "tools\\ffmpeg\\ffmpeg-master-latest-win64-gpl-shared", force = true, relative = true }
+LIBCLANG_PATH = { value = "C:\\Users\\EDY\\miniconda3\\Library\\bin", force = false }

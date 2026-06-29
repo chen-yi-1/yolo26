@@ -13,7 +13,7 @@ runs/
 web_uploads/
 dataset/
 raw_datas/
-docs/
+docs/superpowers/
 *.zip
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -23,6 +23,9 @@ models/
 
 # C extensions
 *.so
+
+# Rust sub-crate local tools / bundled binaries
+rust-inference/tools/
 
 # Distribution / packaging
 .Python
