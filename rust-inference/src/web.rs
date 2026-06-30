@@ -230,23 +230,49 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+/// 检查文件魔数是否为支持的图片格式（JPEG/PNG/GIF/BMP/WebP）
+fn has_valid_image_magic_bytes(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    match data {
+        [0xFF, 0xD8, 0xFF, ..] => true,          // JPEG
+        [0x89, 0x50, 0x4E, 0x47, ..] => true,     // PNG
+        [0x47, 0x49, 0x46, 0x38, ..] => true,     // GIF
+        [0x42, 0x4D, ..] => true,                  // BMP
+        [0x52, 0x49, 0x46, 0x46, ..] => {
+            // WebP: "RIFF" + 4 bytes size + "WEBP" at offset 8
+            data.len() >= 12 && &data[8..12] == b"WEBP"
+        }
+        _ => false,
+    }
+}
+
 /// POST /api/detect — 上传图片并推理（接收 base64 文本）
 async fn detect_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: String,
 ) -> Result<Json<DetectResponse>, (StatusCode, String)> {
-    // 提取文件名
+    // base64 解码
+    let image_data = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("base64 解码失败: {}", e)))?;
+
+    // 魔数校验：检查文件头是否为支持的图片格式
+    if !has_valid_image_magic_bytes(&image_data) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "不支持的文件格式，仅接受 JPEG/PNG/GIF/BMP/WebP 图片".into(),
+        ));
+    }
+
+    // 提取原始文件名（保留用户文件名，内部测试使用）
     let filename = headers
         .get("x-filename")
         .and_then(|v| v.to_str().ok())
         .map(|f| urlencoding::decode(f).unwrap_or(std::borrow::Cow::Borrowed(f)).into_owned())
         .unwrap_or_else(|| "upload".to_string());
-
-    // base64 解码
-    let image_data = base64::engine::general_purpose::STANDARD
-        .decode(body.trim())
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("base64 解码失败: {}", e)))?;
 
     // 保存上传的图片到 web_uploads/
     let save_dir = std::path::Path::new("web_uploads");
@@ -259,75 +285,73 @@ async fn detect_handler(
         (StatusCode::BAD_REQUEST, format!("无法解码图片: {}", e))
     })?;
 
-    // 推理（加锁串行执行）
-    let (annotated, speed, detections, count) = {
-        // 使用 unwrap_or_else 恢复污染锁，避免 Mutex 污染导致服务器永久不可用
+    // 推理（加锁串行执行，仅保护 predict_image 调用，后处理在锁外执行）
+    let results = {
         let mut model = state.model.lock().unwrap_or_else(|poison| {
             eprintln!("⚠ 模型锁被污染，尝试恢复...");
             poison.into_inner()
         });
-        let results = model
+        model
             .predict_image(&img, filename.clone())
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("推理失败: {}", e))
-            })?;
-
-        // 检查推理结果是否为空
-        if results.is_empty() {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "推理返回了空结果".into(),
-            ));
-        }
-
-        let annotated = annotate_image(&img, &results[0], None);
-        let speed = SpeedInfo {
-            preprocess: {
-                let v = results[0].speed.preprocess;
-                if v.is_none() {
-                    eprintln!("⚠ preprocess 计时数据缺失，回退为 0.0");
-                }
-                v.unwrap_or(0.0) as f32
-            },
-            inference: {
-                let v = results[0].speed.inference;
-                if v.is_none() {
-                    eprintln!("⚠ inference 计时数据缺失，回退为 0.0");
-                }
-                v.unwrap_or(0.0) as f32
-            },
-            postprocess: {
-                let v = results[0].speed.postprocess;
-                if v.is_none() {
-                    eprintln!("⚠ postprocess 计时数据缺失，回退为 0.0");
-                }
-                v.unwrap_or(0.0) as f32
-            },
-        };
-
-        let mut dets = Vec::new();
-        if let Some(ref boxes) = results[0].boxes {
-            let xyxy = boxes.xyxy();
-            for i in 0..boxes.len() {
-                let cls_id = boxes.cls()[i] as usize;
-                let name = results[0]
-                    .names
-                    .get(&cls_id)
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let conf = boxes.conf()[i];
-                let row = xyxy.row(i);
-                dets.push(DetectionItem {
-                    class: name,
-                    confidence: conf,
-                    bbox: [row[0], row[1], row[2], row[3]],
-                });
-            }
-        }
-        let count = dets.len();
-        (annotated, speed, dets, count)
+            })?
     };
+
+    // 检查推理结果是否为空
+    if results.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "推理返回了空结果".into(),
+        ));
+    }
+
+    let annotated = annotate_image(&img, &results[0], None);
+    let speed = SpeedInfo {
+        preprocess: {
+            let v = results[0].speed.preprocess;
+            if v.is_none() {
+                eprintln!("⚠ preprocess 计时数据缺失，回退为 0.0");
+            }
+            v.unwrap_or(0.0) as f32
+        },
+        inference: {
+            let v = results[0].speed.inference;
+            if v.is_none() {
+                eprintln!("⚠ inference 计时数据缺失，回退为 0.0");
+            }
+            v.unwrap_or(0.0) as f32
+        },
+        postprocess: {
+            let v = results[0].speed.postprocess;
+            if v.is_none() {
+                eprintln!("⚠ postprocess 计时数据缺失，回退为 0.0");
+            }
+            v.unwrap_or(0.0) as f32
+        },
+    };
+
+    let mut detections = Vec::new();
+    if let Some(ref boxes) = results[0].boxes {
+        let xyxy = boxes.xyxy();
+        for i in 0..boxes.len() {
+            let cls_id = boxes.cls()[i] as usize;
+            let name = results[0]
+                .names
+                .get(&cls_id)
+                .map(|s| s.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let conf = boxes.conf()[i];
+            let row = xyxy.row(i);
+            detections.push(DetectionItem {
+                class: name,
+                confidence: conf,
+                bbox: [row[0], row[1], row[2], row[3]],
+            });
+        }
+    }
+    let count = detections.len();
 
     // 编码标注图为 JPEG base64
     let mut buf = Cursor::new(Vec::new());

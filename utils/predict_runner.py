@@ -138,7 +138,7 @@ def run_web_server(model, predict_kwargs_factory, web_host, web_port):
     import cv2
     import uvicorn
     from fastapi import FastAPI, File, UploadFile
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
 
     app = FastAPI(title="YOLO26 Web 预测")
 
@@ -207,12 +207,23 @@ async function predict() {
 
     @app.post("/predict")
     async def predict(file: UploadFile = File(...)):
+        MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
         contents = await file.read()
+
+        if len(contents) > MAX_UPLOAD_SIZE:
+            return JSONResponse(status_code=413, content={"error": "文件大小超过限制（最大 10MB）"})
+
+        # 校验文件魔数，只允许 JPEG 和 PNG
+        if len(contents) >= 4:
+            if not (contents[:3] == b"\xff\xd8\xff" or contents[:4] == b"\x89\x50\x4e\x47"):
+                return JSONResponse(status_code=400, content={"error": "不支持的图片格式，仅允许 JPEG 和 PNG"})
+        else:
+            return JSONResponse(status_code=400, content={"error": "文件内容为空或格式无效"})
 
         upload_dir = Path("web_uploads")
         upload_dir.mkdir(exist_ok=True)
-        suffix = Path(file.filename).suffix if file.filename else ".jpg"
-        filename = file.filename if file.filename else f"{uuid.uuid4().hex}{suffix}"
+        filename = file.filename if file.filename else f"upload_{uuid.uuid4().hex}.jpg"
         save_path = upload_dir / filename
         save_path.write_bytes(contents)
 
