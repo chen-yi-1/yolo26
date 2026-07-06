@@ -6,7 +6,9 @@ description = "YOLO26 ONNX 推理脚本 — 基于 ultralytics-inference crate"
 
 [dependencies]
 # 核心推理库（默认启用 annotate + visualize 功能）
-ultralytics-inference = { version = "0.0.23", features = ["video"] }
+# 注意：不要启用 "video" feature —— 它要求系统存在 ffmpeg dev 库（avcodec.lib 等），
+# 标签生成与 Web 推理都不需要视频读写。若需视频支持，先在 tools/ffmpeg/ 下配好库再开启。
+ultralytics-inference = { version = "0.0.23" }
 
 # 如果要启用 GPU 加速，取消下面的注释并注释上面那行：
 # ── NVIDIA GPU ──

@@ -2,7 +2,8 @@ mod web;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use ultralytics_inference::{Device, InferenceConfig, YOLOModel};
 
 // ============================================================================
@@ -53,6 +54,10 @@ struct Args {
     /// Web 服务绑定地址
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
+
+    /// 标签生成模式：为数据集目录下的图片生成 YOLO 格式 txt 标签（仅框，类别由文件夹决定）
+    #[arg(long, value_name = "DATASET_ROOT")]
+    labels: Option<PathBuf>,
 }
 
 // ============================================================================
@@ -70,7 +75,148 @@ fn main() -> Result<()> {
     }
 
     let device = parse_device(&args.device)?;
-    run_web_mode(&args, device)
+
+    if let Some(dataset_root) = &args.labels {
+        run_label_mode(&args, device, dataset_root)
+    } else {
+        run_web_mode(&args, device)
+    }
+}
+
+// ============================================================================
+// 标签生成模式入口
+// ============================================================================
+
+/// 读取 classes.txt，返回 {class_name: index}
+fn read_class_map(classes_file: &Path) -> Result<HashMap<String, usize>> {
+    let content = std::fs::read_to_string(classes_file)
+        .with_context(|| format!("无法读取类别文件: {}", classes_file.display()))?;
+    let mut map = HashMap::new();
+    for (idx, line) in content.lines().enumerate() {
+        let name = line.trim();
+        if !name.is_empty() {
+            map.insert(name.to_string(), idx);
+        }
+    }
+    Ok(map)
+}
+
+fn run_label_mode(args: &Args, device: Device, dataset_root: &Path) -> Result<()> {
+    let class_map = read_class_map(&dataset_root.join("classes.txt"))?;
+    println!("类别映射 ({} 类):", class_map.len());
+    let mut class_vec: Vec<_> = class_map.iter().collect();
+    class_vec.sort_by_key(|(_, &idx)| idx);
+    for (name, idx) in &class_vec {
+        println!("  {}: {}", idx, name);
+    }
+
+    let mut config = InferenceConfig::new()
+        .with_confidence(args.conf)
+        .with_iou(args.iou)
+        .with_max_det(args.max_det)
+        .with_device(device)
+        .with_half(args.half);
+    if let Some(ref sz) = args.imgsz {
+        if sz.len() >= 2 {
+            config = config.with_imgsz(sz[0] as usize, sz[1] as usize);
+        }
+    }
+
+    println!("\n🔧 加载模型: {}", args.model);
+    let mut model = YOLOModel::load_with_config(&args.model, config)
+        .with_context(|| format!("无法加载模型: {}", args.model))?;
+
+    let img_exts = |p: &Path| -> bool {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_lowercase().as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp" | "tif" | "tiff"))
+            .unwrap_or(false)
+    };
+
+    let mut total = 0usize;
+    let mut labeled = 0usize;
+    let mut no_det = 0usize;
+    let mut errors = 0usize;
+
+    let mut entries: Vec<_> = std::fs::read_dir(dataset_root)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in &entries {
+        let folder = entry.file_name();
+        let folder_str = folder.to_string_lossy();
+        let class_id = match class_map.get(folder_str.as_ref()) {
+            Some(&id) => id,
+            None => continue,
+        };
+
+        let mut images: Vec<_> = std::fs::read_dir(entry.path())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && img_exts(p))
+            .collect();
+        images.sort();
+
+        if images.is_empty() {
+            continue;
+        }
+        println!("\n[{}] class_id={}, {} 张", folder_str, class_id, images.len());
+
+        for img_path in &images {
+            total += 1;
+            let results = match model.predict(img_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("  [跳过] 推理失败 {}: {}", img_path.display(), e);
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            let result = &results[0];
+            let boxes = match result.boxes.as_ref().filter(|b| b.len() > 0) {
+                Some(b) => b,
+                None => {
+                    // 无检测：写空文件
+                    let txt_path = img_path.with_extension("txt");
+                    std::fs::write(txt_path, b"")?;
+                    no_det += 1;
+                    continue;
+                }
+            };
+
+            // xyxyn 返回归一化 [x1,y1,x2,y2]；转为 YOLO xywh
+            let xyxy = boxes.xyxyn();
+            let mut lines = Vec::with_capacity(boxes.len());
+            for i in 0..xyxy.nrows() {
+                let x1 = xyxy[[i, 0]];
+                let y1 = xyxy[[i, 1]];
+                let x2 = xyxy[[i, 2]];
+                let y2 = xyxy[[i, 3]];
+                let cx = ((x1 + x2) / 2.0).clamp(0.0, 1.0);
+                let cy = ((y1 + y2) / 2.0).clamp(0.0, 1.0);
+                let w = (x2 - x1).clamp(0.0, 1.0);
+                let h = (y2 - y1).clamp(0.0, 1.0);
+                lines.push(format!("{} {:.6} {:.6} {:.6} {:.6}", class_id, cx, cy, w, h));
+            }
+
+            let txt_path = img_path.with_extension("txt");
+            let mut content = lines.join("\n");
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            std::fs::write(txt_path, content.as_bytes())?;
+            labeled += 1;
+        }
+    }
+
+    println!(
+        "\n完成。处理 {} 张，有框 {} 张，无检测 {} 张，错误 {} 张。",
+        total, labeled, no_det, errors
+    );
+    Ok(())
 }
 
 // ============================================================================
