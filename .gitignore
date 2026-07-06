@@ -8,6 +8,11 @@ datasets/
 Medical_Datasets/
 lfw/
 logs/
+archive/
+.agent/
+.agents/
+node_modules/
+.codegraph/
 runs/
 .temp_map_out/
 web_uploads/
