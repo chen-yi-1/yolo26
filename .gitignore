@@ -8,7 +8,6 @@ datasets/
 Medical_Datasets/
 lfw/
 logs/
-archive/
 .agent/
 .agents/
 node_modules/
