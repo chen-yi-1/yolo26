@@ -104,6 +104,16 @@ box = 7.5
 cls = 0.8
 dfl = 1.5
 #------------------------------------------------------------------------------------------------------------------#
+#   cls_pw: 分类损失类别加权幂参数（Ultralytics 8.4+ 新增）
+#   官方默认值：cls_pw=0.0
+#   处理类别不平衡的损失层加权方案（替代旧版已移除的 image_weights）。
+#   0.0 表示关闭；1.0 表示完全按逆类别频率加权；0.5~1.0 之间为部分加权。
+#   与 cls 配合使用：cls 控制分类损失整体权重，cls_pw 控制类别间权重分布。
+#   注意：Ultralytics 8.4 已移除 image_weights 和 label_smoothing，
+#   cls_pw 是官方推荐的类别不平衡替代方案。
+#------------------------------------------------------------------------------------------------------------------#
+cls_pw = 0.3
+#------------------------------------------------------------------------------------------------------------------#
 #   patience: Early Stopping 耐心值
 #   验证集损失连续 patience 轮没有下降时，提前终止训练。
 #   设为 0 表示不启用 early stopping。
@@ -269,13 +279,22 @@ mosaic = 1.0
 #------------------------------------------------------------------------------------------------------------------#
 mixup = 0.1
 #------------------------------------------------------------------------------------------------------------------#
+#   cutmix: CutMix 数据增强概率（Ultralytics 8.4+ 新增）
+#   官方默认值：cutmix=0.0
+#   将一张图的裁剪区域贴到另一张图上，标签按面积比例混合。
+#   对稀有类效果优于_mixup_：被裁剪区域保留完整目标，不易被"稀释"。
+#   与 mixup 可同时开启，增强多样性；数据量小时建议 0.05~0.15。
+#   0.0 表示关闭。
+#------------------------------------------------------------------------------------------------------------------#
+cutmix = 0.1
+#------------------------------------------------------------------------------------------------------------------#
 #   copy_paste / copy_paste_mode: Copy-Paste 数据增强
 #   官方默认值：copy_paste=0.0，copy_paste_mode="flip"
 #   copy_paste 控制增强概率，copy_paste_mode 控制粘贴策略。
 #   copy_paste=0.0 表示默认关闭，copy_paste_mode="flip" 表示使用翻转粘贴策略。
 #   对实例分割任务较常用；检测任务、标签较少或目标边界很精细时建议先保持较低概率。
 #------------------------------------------------------------------------------------------------------------------#
-copy_paste = 0.0
+copy_paste = 0.1
 copy_paste_mode = "flip"
 #------------------------------------------------------------------------------------------------------------------#
 #   auto_augment: 自动增强策略
@@ -291,7 +310,7 @@ auto_augment = "randaugment"
 #   用于提升遮挡鲁棒性。过高可能破坏关键缺陷、小目标或分割区域。
 #   erasing=0.4 表示默认有一定概率随机遮挡局部区域；分割边界敏感任务可适当降低。
 #------------------------------------------------------------------------------------------------------------------#
-erasing = 0.2
+erasing = 0.4
 #------------------------------------------------------------------------------------------------------------------#
 #   crop_fraction: 分类任务裁剪比例
 #   官方默认值：crop_fraction=None
@@ -305,7 +324,15 @@ crop_fraction = None
 #   通常用于训练后期让模型回到更接近真实图片分布的样本上微调。
 #   close_mosaic=10 表示最后 10 个 epoch 关闭 Mosaic；设为 0 表示不主动关闭。
 #------------------------------------------------------------------------------------------------------------------#
-close_mosaic = 15
+close_mosaic = 10
+#------------------------------------------------------------------------------------------------------------------#
+#   cos_lr: 余弦退火学习率调度
+#   官方默认值：cos_lr=False
+#   开启后学习率按余弦曲线从 lr0 衰减到 lr0 * lrf。
+#   训练后期缓慢降温，给尾部类更多收敛时间，避免后期学习率过快跳过稀有类。
+#   False 表示使用常规线性衰减。
+#------------------------------------------------------------------------------------------------------------------#
+cos_lr = True
 
 
 def require_existing_file(path, label):
@@ -332,6 +359,7 @@ def build_train_kwargs(
     lr0,
     box,
     cls,
+    cls_pw,
     dfl,
     patience,
     save_period,
@@ -354,12 +382,14 @@ def build_train_kwargs(
     bgr,
     mosaic,
     mixup,
+    cutmix,
     copy_paste,
     copy_paste_mode,
     auto_augment,
     erasing,
     crop_fraction,
     close_mosaic,
+    cos_lr,
     class_weights,
 ):
     if class_weights is not None:
@@ -384,6 +414,7 @@ def build_train_kwargs(
         "lr0": lr0,
         "box": box,
         "cls": cls,
+        "cls_pw": cls_pw,
         "dfl": dfl,
         "patience": patience,
         "save_period": save_period,
@@ -405,12 +436,14 @@ def build_train_kwargs(
         "bgr": bgr,
         "mosaic": mosaic,
         "mixup": mixup,
+        "cutmix": cutmix,
         "copy_paste": copy_paste,
         "copy_paste_mode": copy_paste_mode,
         "auto_augment": auto_augment,
         "erasing": erasing,
         "crop_fraction": crop_fraction,
         "close_mosaic": close_mosaic,
+        "cos_lr": cos_lr,
     }
     if project is not None:
         kwargs["project"] = project
@@ -443,6 +476,7 @@ def run_training():
         lr0=lr0,
         box=box,
         cls=cls,
+        cls_pw=cls_pw,
         dfl=dfl,
         patience=patience,
         save_period=save_period,
@@ -465,12 +499,14 @@ def run_training():
         bgr=bgr,
         mosaic=mosaic,
         mixup=mixup,
+        cutmix=cutmix,
         copy_paste=copy_paste,
         copy_paste_mode=copy_paste_mode,
         auto_augment=auto_augment,
         erasing=erasing,
         crop_fraction=crop_fraction,
         close_mosaic=close_mosaic,
+        cos_lr=cos_lr,
         class_weights=class_weights,
     )
     return model.train(**train_kwargs)
