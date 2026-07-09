@@ -2,7 +2,8 @@
 将 dataset/ 下的品种图片 + ROI 标签转换为 Ultralytics 标准数据集布局。
 
 输入（源）：
-    dataset/<class_name>/*.jpg   +   dataset/<class_name>/*.txt（YOLO 格式标签）
+    dataset/<class_name>/*.jpg（品种子目录下的图片）
+    dataset/labels/*.txt（YOLO 格式标签，全部集中在此目录，文件名与图片 stem 对应）
     dataset/classes.txt（品种名 -> 类别序号）
 
 输出（目标）：
@@ -12,8 +13,11 @@
     datasets/labels/val/<class_name>_<idx>.txt
     datasets/datasets.yaml
 
-划分比例默认 80/20（train/val），同一品种的所有图片随机打乱后按比例切分。
-复制而非移动，源 dataset/ 保持不变。
+说明：
+    - 标签中每行的首列 class_id 会被忽略，统一替换为 classes.txt 中该品种对应的序号
+    - 标签文件不存在或内容为空的图片会被跳过
+    - 划分比例默认 80/20（train/val），同一品种的所有图片随机打乱后按比例切分
+    - 复制而非移动，源 dataset/ 保持不变
 """
 
 import argparse
@@ -58,6 +62,11 @@ def safe_name(name: str) -> str:
     return name.replace(" ", "_").replace("/", "_").replace("\\", "_")
 
 
+def copy_image_with_ext(img_path: Path, dst_img: Path) -> None:
+    """复制图片，统一 jpeg/jpg 后缀为 .jpg。"""
+    shutil.copy2(str(img_path), str(dst_img))
+
+
 def build_dataset(
     src_root: Path,
     dst_root: Path,
@@ -69,6 +78,10 @@ def build_dataset(
     print(f"类别数: {len(class_names)}")
     print(f"类别: {class_names}")
 
+    labels_dir = src_root / "labels"
+    if not labels_dir.is_dir():
+        raise SystemExit(f"源目录缺少 labels 文件夹: {labels_dir}")
+
     # 创建目标目录
     for sub in ("images/train", "images/val", "labels/train", "labels/val"):
         (dst_root / sub).mkdir(parents=True, exist_ok=True)
@@ -76,6 +89,7 @@ def build_dataset(
     rng = random.Random(seed)
     total_train = 0
     total_val = 0
+    total_skip_no_label = 0
 
     for class_idx, class_name in enumerate(class_names):
         class_dir = src_root / class_name
@@ -88,57 +102,107 @@ def build_dataset(
             print(f"[警告] 品种 {class_name} 下无图片")
             continue
 
-        train_imgs, val_imgs = split_images(images, val_ratio, rng)
-        print(f"  [{class_name}] 总数={len(images)}, train={len(train_imgs)}, val={len(val_imgs)}")
+        # 预过滤：只保留存在且非空标签的图片
+        valid_images: list[Path] = []
+        for img_path in images:
+            txt = labels_dir / f"{img_path.stem}.txt"
+            if txt.is_file() and txt.stat().st_size > 0:
+                valid_images.append(img_path)
+            else:
+                total_skip_no_label += 1
+
+        if not valid_images:
+            print(f"[警告] 品种 {class_name} 下无有效标签图片（共{len(images)}张被跳过）")
+            continue
+
+        train_imgs, val_imgs = split_images(valid_images, val_ratio, rng)
+        print(
+            f"  [{class_name}] 原图={len(images)}, 有效={len(valid_images)}, "
+            f"train={len(train_imgs)}, val={len(val_imgs)}"
+        )
 
         # 复制 train
-        for idx, img_path in enumerate(train_imgs, start=1):
+        out_idx = 0
+        for img_path in train_imgs:
+            txt_content = load_and_prepare_label(labels_dir, img_path, class_idx, conf_filter)
+            if txt_content is None:
+                total_skip_no_label += 1
+                continue
+
+            out_idx += 1
             name_prefix = safe_name(class_name)
-            new_stem = f"{name_prefix}_{idx:04d}"
-            ext = img_path.suffix.lower()
-            # 统一用 .jpg（如果本身是 jpg 系列）
-            if ext in (".jpeg", ".jpg"):
-                ext = ".jpg"
+            new_stem = f"{name_prefix}_{out_idx:04d}"
+            ext = ".png"
 
             dst_img = dst_root / "images" / "train" / f"{new_stem}{ext}"
-            shutil.copy2(str(img_path), str(dst_img))
-
-            # 复制对应的 txt 标签
-            src_txt = img_path.with_suffix(".txt")
-            if src_txt.exists():
-                txt_content = src_txt.read_text(encoding="utf-8")
-                if conf_filter is not None:
-                    txt_content = filter_by_conf(txt_content, conf_filter)
-                dst_txt = dst_root / "labels" / "train" / f"{new_stem}.txt"
-                dst_txt.write_text(txt_content, encoding="utf-8")
-
+            copy_image_with_ext(img_path, dst_img)
+            dst_txt = dst_root / "labels" / "train" / f"{new_stem}.txt"
+            dst_txt.write_text(txt_content, encoding="utf-8")
             total_train += 1
 
         # 复制 val
-        for idx, img_path in enumerate(val_imgs, start=1):
+        out_idx = 0
+        for img_path in val_imgs:
+            txt_content = load_and_prepare_label(labels_dir, img_path, class_idx, conf_filter)
+            if txt_content is None:
+                total_skip_no_label += 1
+                continue
+
+            out_idx += 1
             name_prefix = safe_name(class_name)
-            new_stem = f"{name_prefix}_{idx:04d}"
-            ext = img_path.suffix.lower()
-            if ext in (".jpeg", ".jpg"):
-                ext = ".jpg"
+            new_stem = f"{name_prefix}_{out_idx:04d}"
+            ext = ".png"
 
             dst_img = dst_root / "images" / "val" / f"{new_stem}{ext}"
-            shutil.copy2(str(img_path), str(dst_img))
-
-            src_txt = img_path.with_suffix(".txt")
-            if src_txt.exists():
-                txt_content = src_txt.read_text(encoding="utf-8")
-                if conf_filter is not None:
-                    txt_content = filter_by_conf(txt_content, conf_filter)
-                dst_txt = dst_root / "labels" / "val" / f"{new_stem}.txt"
-                dst_txt.write_text(txt_content, encoding="utf-8")
-
+            copy_image_with_ext(img_path, dst_img)
+            dst_txt = dst_root / "labels" / "val" / f"{new_stem}.txt"
+            dst_txt.write_text(txt_content, encoding="utf-8")
             total_val += 1
 
-    print(f"\n总计 train={total_train}, val={total_val}")
+    print(f"\n总计 train={total_train}, val={total_val}, 跳过（无有效标签）={total_skip_no_label}")
 
     # 写 datasets.yaml
     write_datasets_yaml(dst_root, class_names)
+
+
+def rewrite_label_class_id(txt_content: str, class_idx: int) -> str:
+    """替换标签每行首列的 class_id 为指定的品种序号，保留后续 ROI 坐标列。
+    同时兼容 5 列（class cx cy w h）和 6 列（带 conf）以及多边形多列格式。"""
+    if not txt_content.strip():
+        return txt_content
+    lines = txt_content.strip().split("\n")
+    rewritten = []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) < 5:
+            continue
+        parts[0] = str(class_idx)
+        rewritten.append(" ".join(parts))
+    return "\n".join(rewritten) + "\n" if rewritten else ""
+
+
+def load_and_prepare_label(
+    labels_dir: Path,
+    img_path: Path,
+    class_idx: int,
+    conf_filter: float | None,
+) -> str | None:
+    """从统一 labels 目录加载标签，执行置信度过滤 + class_id 重写。
+    标签不存在或内容为空则返回 None。"""
+    src_txt = labels_dir / f"{img_path.stem}.txt"
+    if not src_txt.is_file():
+        return None
+    txt_content = src_txt.read_text(encoding="utf-8")
+    if not txt_content.strip():
+        return None
+    if conf_filter is not None:
+        txt_content = filter_by_conf(txt_content, conf_filter)
+        if not txt_content.strip():
+            return None
+    txt_content = rewrite_label_class_id(txt_content, class_idx)
+    if not txt_content.strip():
+        return None
+    return txt_content
 
 
 def filter_by_conf(txt_content: str, conf_threshold: float) -> str:
