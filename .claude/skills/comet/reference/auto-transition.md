@@ -13,7 +13,7 @@
 退出条件满足且阶段守卫推进 phase 后，运行：
 
 ```bash
-"$COMET_BASH" "$COMET_STATE" next <change-name>
+node "$COMET_STATE" next <change-name>
 ```
 
 脚本根据 `phase`、`workflow`、`auto_transition` 输出确定性的下一步：
@@ -22,6 +22,6 @@
 - `NEXT: manual` → 不要调用下一 skill，按 `HINT` 提示用户手动运行 `/<SKILL>`
 - `NEXT: done` → 流程已完成，无需继续
 
-## preset 路由
+## 预设路由
 
-`workflow: hotfix` 时，`phase: build` 返回 `comet-hotfix`；`workflow: tweak` 时返回 `comet-tweak`。其余 phase（`verify`、`archive`）按标准 skill 名称返回（`comet-verify`、`comet-archive`），不受 workflow 类型影响。preset skill 内部的"连续执行模式"可能覆盖 `auto_transition` 行为——详见对应 preset 的 `<IMPORTANT>` 块。
+`workflow: hotfix` 时，`phase: build` 返回 `comet-hotfix`；`workflow: tweak` 时返回 `comet-tweak`。其余 phase（`verify`、`archive`）按标准 Skill 名称返回（`comet-verify`、`comet-archive`），不受 workflow 类型影响。预设 Skill 内部的"连续执行模式"可能覆盖 `auto_transition` 行为——详见对应预设的 `<IMPORTANT>` 块。

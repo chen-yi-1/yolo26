@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/skills/comet/scripts/comet-hook-guard.sh"
+            "command": "node \"C:/Users/EDY/Desktop/yolo26/.claude/skills/comet/scripts/comet-hook-guard.mjs\" --project-root \"C:/Users/EDY/Desktop/yolo26\""
           }
         ]
       }

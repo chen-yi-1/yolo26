@@ -4,10 +4,20 @@
 
 本协议由所有可能触发上下文压缩的 comet 子 skill 共享。当 agent 怀疑发生上下文压缩（之前对话被摘要、找不到之前讨论的内容）时，按本协议恢复。
 
+## 任意入口恢复原则
+
+用户可能直接从 `/comet-open`、`/comet-design`、`/comet-build`、`/comet-verify`、`/comet-archive`、`/comet-hotfix` 或 `/comet-tweak` 回到流程。进入任意子 Skill 时，都先按 `comet/reference/scripts.md` 定位脚本，再用当前子 Skill 对应 phase 运行入口检查或恢复检查。不得依赖对话历史判断阶段。
+
+```bash
+node "$COMET_STATE" check <change-name> <phase> --recover
+```
+
+若检查结果显示实际 phase、workflow 或 evidence 应由其他 Skill 处理，按脚本输出和 `/comet` 路由规则切换；不要在错误阶段继续补写状态。若存在未提交改动，先按 `comet/reference/dirty-worktree.md` 归因。
+
 ## 恢复步骤
 
 ```bash
-"$COMET_BASH" "$COMET_STATE" check <change-name> <phase> --recover
+node "$COMET_STATE" check <change-name> <phase> --recover
 ```
 
 脚本输出结构化恢复上下文（phase、已完成字段、待完成字段、恢复动作）。按 **Recovery action** 决定下一步。

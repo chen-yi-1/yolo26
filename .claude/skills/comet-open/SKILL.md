@@ -1,6 +1,6 @@
 ---
 name: comet-open
-description: "Comet 阶段 1：开启。用 /comet-open 调用。通过 OpenSpec 探索想法、确认需求澄清，再创建 change 结构（proposal + design + tasks）。"
+description: "Use when Comet 需要创建新的 OpenSpec change，或 active change 缺少 proposal/design/tasks/.comet.yaml 初始化产物。"
 ---
 
 # Comet 阶段 1：开启（Open）
@@ -13,7 +13,7 @@ description: "Comet 阶段 1：开启。用 /comet-open 调用。通过 OpenSpec
 
 ### 0. 输出语言约束
 
-传递给 OpenSpec 的所有提问和产物要求都必须包含输出语言约束：使用触发本次工作流的用户请求语言。恢复已有 change 且产物已有明确主语言时，除非用户明确要求切换，否则保持该语言。
+传递给 OpenSpec 的所有提问和产物要求都必须包含解析后的 Comet 产物语言，并使用 `en`、`zh-CN` 这类规范化 ID。`.comet.yaml` 尚不存在时读取 `.comet/config.yaml` 的 `language`；change 初始化后使用 `"$COMET_BASH" "$COMET_STATE" get <name> language` 读取。没有配置语言时才回退到当前用户请求语言。生成的 `proposal.md`、`design.md`、`tasks.md` 必须以该语言为主语言。
 
 ### 1. 探索想法与需求澄清
 
@@ -131,26 +131,16 @@ openspec/changes/<name>/
 ├── .openspec.yaml
 ├── .comet.yaml
 ├── proposal.md       # Why + What：问题、目标、范围
-├── design.md         # How（高层）：架构决策、方案选型
+├── design.md         # How（高层框架）：架构决策、方案选型（深度技术设计在 design 阶段 Design Doc 细化）
 └── tasks.md          # 任务清单（勾选框）
 ```
 
 创建 `.comet.yaml` 状态文件：
 
+先按 `comet/reference/scripts.md` 定位脚本（定位 `comet-env.mjs`），然后初始化状态：
+
 ```bash
-COMET_ENV="${COMET_ENV:-$(find . "$HOME"/.*/skills "$HOME/.config" "$HOME/.gemini" -path '*/comet/scripts/comet-env.sh' -type f -print -quit 2>/dev/null)}"
-if [ -z "$COMET_ENV" ]; then
-  echo "ERROR: comet-env.sh not found. Ensure the comet skill is installed." >&2
-  return 1
-fi
-. "$COMET_ENV"
-
-if [ -z "$COMET_STATE" ] || [ -z "$COMET_GUARD" ]; then
-  echo "ERROR: Comet scripts not found. Ensure the comet skill is installed." >&2
-  return 1
-fi
-
-"$COMET_BASH" "$COMET_STATE" init <name> full
+node "$COMET_STATE" init <name> full
 ```
 
 ### 3. 入口状态验证
@@ -158,7 +148,7 @@ fi
 验证状态机已正确初始化：
 
 ```bash
-"$COMET_BASH" "$COMET_STATE" check <name> open
+node "$COMET_STATE" check <name> open
 ```
 
 验证通过后继续 Step 4。验证失败时脚本会输出具体失败原因。
@@ -195,26 +185,26 @@ fi
 
 - proposal.md、design.md、tasks.md 均已创建且内容完整
 - **用户已确认** proposal、design、tasks 内容符合预期
-- **阶段守卫**：运行 `"$COMET_BASH" "$COMET_GUARD" <change-name> open --apply`，全部 PASS 后由守卫推进到下一阶段（此步骤更新 `phase` 字段，与 `auto_transition` 无关）
+- **阶段守卫**：运行 `node "$COMET_GUARD" <change-name> open --apply`，全部 PASS 后由守卫推进到下一阶段（此步骤更新 `phase` 字段，与 `auto_transition` 无关）
 
 退出前必须使用 `--apply`，否则 `.comet.yaml` 仍停留在 `phase: open`，下一阶段入口检查会失败。
 
 ```bash
-"$COMET_BASH" "$COMET_GUARD" <change-name> open --apply
+node "$COMET_GUARD" <change-name> open --apply
 ```
 
-完整流程会自动更新为 `phase: design`；hotfix/tweak preset 会自动更新为 `phase: build`。
+完整流程会自动更新为 `phase: design`；hotfix/tweak 预设会自动更新为 `phase: build`。
 
 ## 自动衔接下一阶段
 
 按 `comet/reference/auto-transition.md` 执行。关键命令：
 
 ```bash
-"$COMET_BASH" "$COMET_STATE" next <change-name>
+node "$COMET_STATE" next <change-name>
 ```
 
 - `NEXT: auto` → 调用 `SKILL` 指向的 skill 进入下一阶段
 - `NEXT: manual` → 不要调用下一 skill，按 `HINT` 提示用户手动运行 `/<SKILL>`
 - `NEXT: done` → 流程已完成，无需继续
 
-hotfix/tweak preset 由对应 preset skill 控制后续流转（phase 直接进入 build），其 `next` 会返回对应 preset skill。
+hotfix/tweak 预设由对应预设 Skill 控制后续流转（phase 直接进入 build），其 `next` 会返回对应预设 Skill。

@@ -26,12 +26,13 @@ from utils.predict_runner import (
 #   根据需求选择对应的模式，不同模式使用下方对应的配置参数。
 #------------------------------------------------------------------------------------------------------------------#
 mode = "web"
+task = "detect"
 #------------------------------------------------------------------------------------------------------------------#
 #   model_path: 模型权值文件路径
 #   可以是本地 .pt 文件路径，也可以是官方模型名称。
 #   预测时使用的权值应与训练时的任务类型（detect/segment）一致。
 #------------------------------------------------------------------------------------------------------------------#
-model_path = r"C:\Users\EDY\Desktop\yolo26\runs\detect\baseline_v1_11cls\weights\best.pt"
+model_path = r"C:\Users\EDY\Desktop\yolo26\runs\detect\baseline_v1_11cls-2\weights\best.pt"
 #------------------------------------------------------------------------------------------------------------------#
 #   input_shape: 网络输入尺寸，必须是 32 的倍数
 #   预测时会将输入图片缩放到此尺寸进行推理。
@@ -212,7 +213,7 @@ def run_web(model):
 
 
 def run_mode(selected_mode=mode):
-    model = YOLO(model_path)
+    model = YOLO(model_path,task=task)
 
     if selected_mode == "predict":
         return run_predict(model)
