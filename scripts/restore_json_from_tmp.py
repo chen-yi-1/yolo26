@@ -10,7 +10,7 @@
 import shutil
 from pathlib import Path
 
-DATASET_ROOT = Path(r"C:\Users\EDY\Desktop\yolo26\dataset")
+DATASET_ROOT = Path(r"dataset")
 LABELS_DIR = DATASET_ROOT / "labels"
 TMP_DIR = DATASET_ROOT / "tmp"
 

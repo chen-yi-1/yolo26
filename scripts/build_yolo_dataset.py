@@ -63,7 +63,7 @@ def safe_name(name: str) -> str:
 
 
 def copy_image_with_ext(img_path: Path, dst_img: Path) -> None:
-    """复制图片，统一 jpeg/jpg 后缀为 .jpg。"""
+    """原样复制图片，保持原始文件名和扩展名。"""
     shutil.copy2(str(img_path), str(dst_img))
 
 
@@ -90,6 +90,9 @@ def build_dataset(
     total_train = 0
     total_val = 0
     total_skip_no_label = 0
+    total_skip_collision = 0
+    used_train_names: set[str] = set()
+    used_val_names: set[str] = set()
 
     for class_idx, class_name in enumerate(class_names):
         class_dir = src_root / class_name
@@ -122,44 +125,51 @@ def build_dataset(
         )
 
         # 复制 train
-        out_idx = 0
         for img_path in train_imgs:
             txt_content = load_and_prepare_label(labels_dir, img_path, class_idx, conf_filter)
             if txt_content is None:
                 total_skip_no_label += 1
                 continue
 
-            out_idx += 1
-            name_prefix = safe_name(class_name)
-            new_stem = f"{name_prefix}_{out_idx:04d}"
-            ext = ".png"
+            orig_name = img_path.name
+            if orig_name in used_train_names:
+                print(f"  [警告] train中文件名重复，跳过: {orig_name} ({class_name})")
+                total_skip_collision += 1
+                continue
+            used_train_names.add(orig_name)
+            orig_stem = img_path.stem
+            orig_suffix = img_path.suffix
 
-            dst_img = dst_root / "images" / "train" / f"{new_stem}{ext}"
+            dst_img = dst_root / "images" / "train" / orig_name
             copy_image_with_ext(img_path, dst_img)
-            dst_txt = dst_root / "labels" / "train" / f"{new_stem}.txt"
+            dst_txt = dst_root / "labels" / "train" / f"{orig_stem}.txt"
             dst_txt.write_text(txt_content, encoding="utf-8")
             total_train += 1
 
         # 复制 val
-        out_idx = 0
         for img_path in val_imgs:
             txt_content = load_and_prepare_label(labels_dir, img_path, class_idx, conf_filter)
             if txt_content is None:
                 total_skip_no_label += 1
                 continue
 
-            out_idx += 1
-            name_prefix = safe_name(class_name)
-            new_stem = f"{name_prefix}_{out_idx:04d}"
-            ext = ".png"
+            orig_name = img_path.name
+            if orig_name in used_val_names:
+                print(f"  [警告] val中文件名重复，跳过: {orig_name} ({class_name})")
+                total_skip_collision += 1
+                continue
+            used_val_names.add(orig_name)
+            orig_stem = img_path.stem
+            orig_suffix = img_path.suffix
 
-            dst_img = dst_root / "images" / "val" / f"{new_stem}{ext}"
+            dst_img = dst_root / "images" / "val" / orig_name
             copy_image_with_ext(img_path, dst_img)
-            dst_txt = dst_root / "labels" / "val" / f"{new_stem}.txt"
+            dst_txt = dst_root / "labels" / "val" / f"{orig_stem}.txt"
             dst_txt.write_text(txt_content, encoding="utf-8")
             total_val += 1
 
-    print(f"\n总计 train={total_train}, val={total_val}, 跳过（无有效标签）={total_skip_no_label}")
+    collision_msg = f", 跳过（重名冲突）={total_skip_collision}" if total_skip_collision else ""
+    print(f"\n总计 train={total_train}, val={total_val}, 跳过（无有效标签）={total_skip_no_label}{collision_msg}")
 
     # 写 datasets.yaml
     write_datasets_yaml(dst_root, class_names)
@@ -252,8 +262,8 @@ def write_datasets_yaml(dst_root: Path, class_names: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="将 dataset/ 转为 Ultralytics 标准数据集布局 datasets/")
-    parser.add_argument("--src", default=r"C:\Users\EDY\Desktop\yolo26\dataset", help="源 dataset 根目录")
-    parser.add_argument("--dst", default=r"C:\Users\EDY\Desktop\yolo26\datasets", help="目标数据集根目录")
+    parser.add_argument("--src", default="dataset", help="源 dataset 根目录")
+    parser.add_argument("--dst", default="datasets", help="目标数据集根目录")
     parser.add_argument("--val-ratio", type=float, default=0.2, help="验证集比例（默认 0.2）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子（默认 42，保证可复现）")
     parser.add_argument("--conf", type=float, default=None, help="标签置信度阈值（仅当标签含 conf 列时生效，默认不过滤）")

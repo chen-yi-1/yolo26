@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-DATASET_DIR = Path(r"C:\Users\EDY\Desktop\yolo26\dataset")
+DATASET_DIR = Path("dataset")
 
 # 支持的图片扩展名
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -61,16 +61,17 @@ def rename_category(category_dir: Path, dry_run: bool):
 
         # 防止自身重名冲突
         if new_img_path.resolve() == img_path.resolve():
-            pass  # 同名，跳过
+            pass  # 同名且同路径，跳过改名
         elif new_img_path.exists():
-            print(f"  [冲突] 目标已存在: {new_img_name}")
+            print(f"  [冲突] 目标已存在: {new_img_name}，跳过 {img_path.name}")
             continue
 
         if dry_run:
             print(f"  {img_path.name} -> {new_img_name}")
         else:
-            img_path.rename(new_img_path)
-            renamed_count += 1
+            if new_img_path.resolve() != img_path.resolve():
+                img_path.rename(new_img_path)
+                renamed_count += 1
 
         # 处理对应 JSON
         if json_path and json_path.exists():
@@ -84,8 +85,9 @@ def rename_category(category_dir: Path, dry_run: bool):
             if dry_run:
                 print(f"  {json_path.name} -> {new_json_name}")
             else:
-                json_path.rename(new_json_path)
-                renamed_count += 1
+                if new_json_path.resolve() != json_path.resolve():
+                    json_path.rename(new_json_path)
+                    renamed_count += 1
                 if update_json_image_path(new_json_path, new_img_name):
                     json_updated_count += 1
 

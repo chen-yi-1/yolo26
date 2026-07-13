@@ -10,7 +10,7 @@ from pathlib import Path
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-DATASET_ROOT = Path(r"C:\Users\EDY\Desktop\yolo26\dataset")
+DATASET_ROOT = Path(r"dataset")
 LABELS_DIR = DATASET_ROOT / "labels"
 TMP_DIR = DATASET_ROOT / "tmp"
 
