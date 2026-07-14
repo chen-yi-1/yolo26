@@ -1,70 +1,53 @@
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+# 行为准则
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+> 这些准则倾向谨慎而非速度；对于琐碎任务，凭判断自行决定。
 
-## 1. Think Before Coding
+## 1. 先想清楚，再动手编码
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+**不假设、不隐藏困惑、主动暴露权衡。**
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+- 不确定时，先说明假设，再提问
+- 存在多种理解时，列出来，不要默选
+- 有更低复杂度的做法时，主动说出来
+- 不清楚时，先停下、点名哪里不清楚、再去问
 
-## 2. Simplicity First
+## 2. 目标先行
 
-**Minimum code that solves the problem. Nothing speculative.**
+**把任务变成可验证的目标，定义清晰的成功标准。**
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+把模糊需求翻译成可验证目标：
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+- "加校验" → "先写非法输入的测试，再让测试全过"
+- "修 bug" → "先写一个能复现 bug 的测试，再让测试通过"
+- "重构 X" → "重构前后测试都能通过"
 
-## 3. Surgical Changes
+多步任务，先列出简短计划：
 
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+1. [步骤] → 校验: []
+2. [步骤] → 校验: []
+3. [步骤] → 校验: []
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+## 3. 最小代码、最小改动
+
+**只做该做的事，写只够用的代码。**
+
+- 只触碰为完成任务所必须的文件、函数、行
+- 不为一次使用的逻辑构造抽象
+- 不为没被要求的"灵活性/可配置性"写代码
+- 不为不可能发生的场景写错误处理
+- 每个分支/报错/降级都要能回答：没有它会卡住吗？标准库是否已处理？
+- 改完后自问："一个高级工程师会觉得很过度吗？"是 → 就简化
+- 不顺手重构、改风格、优化非自身改动引入的代码
+- 改动引入的未使用引入/变量/函数，由你清理；既有的默认不动
+- 看到无关的顺手不好处理的事：**先报告**，不要擅自删除
+
+## 4. 代码管理
+
+- 重大修改或重构前，先在 Git 上 commit，以便回退与溯源
+- 所有与项目相关的产出（代码注释、提交、日志、文档）**默认使用中文**
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
-## 5. Code Management Practices
-
-**Version Control and Documentation Standards**
-
-- Always commit changes before making significant code modifications or refactoring to maintain a clear history and enable rollback when using Git.
-- Document all changes in Chinese, including code comments, commit messages, and log files.
+**指南起作用的信号：** diff 里不必要改动更少、因过度复杂导致的返工更少、令人困惑的地方在动手前澄清而非动手后暴露。

@@ -9,7 +9,7 @@ Medical_Datasets/
 lfw/
 logs/
 node_modules/
-.codegraph/
+.claude/
 runs/
 .temp_map_out/
 web_uploads/
