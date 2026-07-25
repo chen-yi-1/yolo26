@@ -100,7 +100,7 @@ def merge_supplement_dataset(supplements, target, train_ratio=0.8, seed=42):
             _image_label_pairs(Path(source) / "images", Path(source) / "labels")
         )
         if not pairs:
-            print(f"  Warning: no matched image/label pairs")
+            print("  Warning: no matched image/label pairs")
             continue
 
         shuffled = list(pairs)

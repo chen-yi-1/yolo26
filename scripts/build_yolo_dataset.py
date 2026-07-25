@@ -21,7 +21,6 @@
 """
 
 import argparse
-import os
 import random
 import shutil
 from pathlib import Path
@@ -144,7 +143,6 @@ def build_dataset(
                 continue
             used_train_names.add(orig_name)
             orig_stem = img_path.stem
-            orig_suffix = img_path.suffix
 
             dst_img = dst_root / "images" / "train" / orig_name
             copy_image_with_ext(img_path, dst_img)
@@ -168,7 +166,6 @@ def build_dataset(
                 continue
             used_val_names.add(orig_name)
             orig_stem = img_path.stem
-            orig_suffix = img_path.suffix
 
             dst_img = dst_root / "images" / "val" / orig_name
             copy_image_with_ext(img_path, dst_img)

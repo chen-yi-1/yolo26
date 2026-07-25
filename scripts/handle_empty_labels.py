@@ -106,7 +106,7 @@ def main() -> None:
         else:
             missing_imgs += 1
 
-    print(f"\n[DONE] 处理完成")
+    print("\n[DONE] 处理完成")
     print(f"  删除 JSON 数量: {deleted_json}")
     print(f"  找不到 JSON:   {missing_json}")
     print(f"  复制图片数量:   {copied_imgs}")

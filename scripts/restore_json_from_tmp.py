@@ -92,7 +92,7 @@ def main() -> None:
         except Exception as e:
             print(f"[ERROR] 移动失败 {json_file} -> {dst}: {e}")
 
-    print(f"\n[DONE] 处理完成")
+    print("\n[DONE] 处理完成")
     print(f"  成功移动 JSON:       {moved}")
     print(f"  其中覆盖已有文件:    {already_exists}")
     print(f"  标签仍为空（跳过）:  {skipped_label_empty}")
