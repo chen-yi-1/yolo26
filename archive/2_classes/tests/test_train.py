@@ -155,9 +155,7 @@ def test_plot_training_results_creates_summary_png(tmp_path):
 def test_plot_training_results_from_run_uses_model_trainer_save_dir(tmp_path):
     csv_path = tmp_path / "results.csv"
     csv_path.write_text(
-        "epoch,train/box_loss,metrics/mAP50(B)\n"
-        "1,1.0,0.2\n"
-        "2,0.7,0.4\n",
+        "epoch,train/box_loss,metrics/mAP50(B)\n1,1.0,0.2\n2,0.7,0.4\n",
         encoding="utf-8",
     )
 

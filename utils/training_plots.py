@@ -53,11 +53,13 @@ def plot_training_results(csv_path, output_path=None):
     ]
     columns = [column for column in rows[0] if column != "epoch"]
     train_loss_columns = [
-        column for column in columns
+        column
+        for column in columns
         if column.startswith("train/") and "loss" in column.lower()
     ]
     val_loss_columns = [
-        column for column in columns
+        column
+        for column in columns
         if column.startswith("val/") and "loss" in column.lower()
     ]
     metric_columns = [column for column in columns if column.startswith("metrics/")]

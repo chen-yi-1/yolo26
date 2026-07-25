@@ -38,7 +38,9 @@ def test_prepare_dataset_keeps_empty_label_backgrounds_with_class_sampling(tmp_p
     assert result["train"] == 3
     assert (output / "images" / "train" / "background_a.jpg").is_file()
     assert (output / "labels" / "train" / "background_a.txt").is_file()
-    assert (output / "labels" / "train" / "background_a.txt").read_text(encoding="utf-8") == ""
+    assert (output / "labels" / "train" / "background_a.txt").read_text(
+        encoding="utf-8"
+    ) == ""
 
 
 def test_prepare_dataset_limits_empty_label_backgrounds_when_requested(tmp_path):
@@ -137,12 +139,14 @@ def test_prepare_dataset_oversamples_training_class_to_target_ratio(tmp_path):
         seed=3,
     )
 
-    train_labels = sorted(path.name for path in (output / "labels" / "train").glob("*.txt"))
+    train_labels = sorted(
+        path.name for path in (output / "labels" / "train").glob("*.txt")
+    )
     assert result["train"] == 6
     assert train_labels.count("abnormal_a.txt") == 1
     assert "abnormal_a_os001.txt" in train_labels
     assert "abnormal_a_os002.txt" in train_labels
     assert (output / "images" / "train" / "abnormal_a_os001.jpg").is_file()
-    assert (output / "labels" / "train" / "abnormal_a_os001.txt").read_text(encoding="utf-8") == (
-        output / "labels" / "train" / "abnormal_a.txt"
-    ).read_text(encoding="utf-8")
+    assert (output / "labels" / "train" / "abnormal_a_os001.txt").read_text(
+        encoding="utf-8"
+    ) == (output / "labels" / "train" / "abnormal_a.txt").read_text(encoding="utf-8")

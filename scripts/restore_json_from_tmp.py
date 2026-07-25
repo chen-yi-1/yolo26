@@ -33,7 +33,11 @@ def resolve_class_dir_for_stem(stem: str) -> Path | None:
     """根据 stem 找到对应的类别文件夹。
     优先方法：扫描所有类别目录，找到包含同名图片的目录。
     """
-    class_dirs = [d for d in DATASET_ROOT.iterdir() if d.is_dir() and d.name not in ("labels", "tmp")]
+    class_dirs = [
+        d
+        for d in DATASET_ROOT.iterdir()
+        if d.is_dir() and d.name not in ("labels", "tmp")
+    ]
     for class_dir in class_dirs:
         for ext in IMG_EXTS:
             if (class_dir / f"{stem}{ext}").is_file():

@@ -33,7 +33,11 @@ def resolve_class_and_paths(stem: str) -> tuple[Path | None, Path | None]:
     返回 (json_path, img_path)，找不到为 None。
     """
     # 遍历所有类别目录（排除 labels 和 tmp）
-    class_dirs = [d for d in DATASET_ROOT.iterdir() if d.is_dir() and d.name not in ("labels", "tmp")]
+    class_dirs = [
+        d
+        for d in DATASET_ROOT.iterdir()
+        if d.is_dir() and d.name not in ("labels", "tmp")
+    ]
     json_path = None
     img_path = None
     for class_dir in class_dirs:

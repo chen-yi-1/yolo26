@@ -33,7 +33,8 @@ def discover_image_files(source_dir):
     if not source_dir.exists():
         return []
     return [
-        path for path in sorted(source_dir.rglob("*"))
+        path
+        for path in sorted(source_dir.rglob("*"))
         if path.is_file()
         and path.suffix.lower() in IMAGE_EXTENSIONS
         and "labels" not in path.relative_to(source_dir).parts
@@ -44,10 +45,7 @@ def discover_label_files(labels_dir):
     labels_dir = Path(labels_dir)
     if not labels_dir.exists():
         return []
-    return [
-        path for path in sorted(labels_dir.glob("*.txt"))
-        if path.is_file()
-    ]
+    return [path for path in sorted(labels_dir.glob("*.txt")) if path.is_file()]
 
 
 def read_classes(classes_path):
@@ -69,7 +67,9 @@ def validate_class_id(raw_class_id, class_count, label_path, line_number):
     try:
         class_id = int(raw_class_id)
     except ValueError as exc:
-        raise ValueError(f"{label_path}:{line_number} has invalid class id: {raw_class_id}") from exc
+        raise ValueError(
+            f"{label_path}:{line_number} has invalid class id: {raw_class_id}"
+        ) from exc
     if class_id < 0 or class_id >= class_count:
         raise ValueError(
             f"{label_path}:{line_number} class id {class_id} is outside 0..{class_count - 1}"
@@ -81,7 +81,9 @@ def validate_normalized_coords(values, label_path, line_number):
         try:
             coord = float(value)
         except ValueError as exc:
-            raise ValueError(f"{label_path}:{line_number} has invalid coordinate: {value}") from exc
+            raise ValueError(
+                f"{label_path}:{line_number} has invalid coordinate: {value}"
+            ) from exc
         if coord < 0.0 or coord > 1.0:
             raise ValueError(
                 f"{label_path}:{line_number} coordinate {coord} is outside normalized range [0, 1]"
@@ -94,7 +96,9 @@ def validate_segmentation_label(label_path, class_count):
     if not label_path.exists():
         return
 
-    for line_number, raw_line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, raw_line in enumerate(
+        label_path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         line = raw_line.strip()
         if not line:
             continue
@@ -114,7 +118,9 @@ def validate_detection_label(label_path, class_count):
     if not label_path.exists():
         return
 
-    for line_number, raw_line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, raw_line in enumerate(
+        label_path.read_text(encoding="utf-8").splitlines(), 1
+    ):
         line = raw_line.strip()
         if not line:
             continue
@@ -171,8 +177,14 @@ def sample_items_fixed_count(label_files, sample_count, background_count, split,
             class_groups.setdefault(class_id, []).append(label_file)
 
     # Sample fixed count from each class
-    if background_count is not None and background_count >= 0 and len(background_labels) > background_count:
-        background_labels = random.Random(seed).sample(background_labels, background_count)
+    if (
+        background_count is not None
+        and background_count >= 0
+        and len(background_labels) > background_count
+    ):
+        background_labels = random.Random(seed).sample(
+            background_labels, background_count
+        )
     sampled = list(background_labels)
     if background_labels:
         print(f"  Keeping background labels: {len(background_labels)}")
@@ -187,7 +199,9 @@ def sample_items_fixed_count(label_files, sample_count, background_count, split,
         actual_count = min(sample_count, len(items))
         class_sampled = random.Random(seed + class_id).sample(items, actual_count)
         sampled.extend(class_sampled)
-        print(f"  Sampling class {class_id}: {actual_count}/{len(items)} (requested: {sample_count})")
+        print(
+            f"  Sampling class {class_id}: {actual_count}/{len(items)} (requested: {sample_count})"
+        )
 
     print(f"  Total sampled from {split}: {len(sampled)}/{len(label_files)}")
     return sampled
@@ -216,7 +230,7 @@ def build_image_index(image_files):
 def get_label_class_id(label_path):
     """Extract the class ID from the first line of a YOLO label file."""
     try:
-        with open(label_path, 'r', encoding='utf-8') as f:
+        with open(label_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -238,7 +252,9 @@ def resolve_class_id(class_name_or_id, names):
             raise ValueError(f"Unknown oversample class: {class_name_or_id}")
         return names.index(class_name_or_id)
     if class_id < 0 or class_id >= len(names):
-        raise ValueError(f"oversample class id {class_id} is outside 0..{len(names) - 1}")
+        raise ValueError(
+            f"oversample class id {class_id} is outside 0..{len(names) - 1}"
+        )
     return class_id
 
 
@@ -294,7 +310,17 @@ def count_classes(label_files, names):
     return class_counts
 
 
-def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, image_index, names, task, seed):
+def copy_labelled_items(
+    source_dir,
+    labels_dir,
+    output_dir,
+    split,
+    label_files,
+    image_index,
+    names,
+    task,
+    seed,
+):
     copied = 0
     missing_images = []
 
@@ -305,14 +331,14 @@ def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, 
             label_src, name_suffix = label_item, None
 
         validate_yolo_label(label_src, len(names), task)
-        
+
         # Get class ID from label file
         class_id = get_label_class_id(label_src)
-        
+
         # Find matching image
         image_candidates = image_index.get(label_src.stem, [])
         image_src = None
-        
+
         if len(image_candidates) == 1:
             # Only one candidate, use it
             image_src = image_candidates[0]
@@ -324,14 +350,18 @@ def copy_labelled_items(source_dir, labels_dir, output_dir, split, label_files, 
                     if class_name in str(candidate.parent):
                         image_src = candidate
                         break
-        
+
         if image_src is None:
             missing_images.append(label_src.stem)
             continue
 
         dst_stem = f"{label_src.stem}{name_suffix or ''}"
-        image_dst = Path(output_dir) / "images" / split / f"{dst_stem}{image_src.suffix}"
-        label_dst = Path(output_dir) / "labels" / split / f"{dst_stem}{label_src.suffix}"
+        image_dst = (
+            Path(output_dir) / "images" / split / f"{dst_stem}{image_src.suffix}"
+        )
+        label_dst = (
+            Path(output_dir) / "labels" / split / f"{dst_stem}{label_src.suffix}"
+        )
         image_dst.parent.mkdir(parents=True, exist_ok=True)
         label_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(image_src, image_dst)
@@ -386,9 +416,13 @@ def prepare_yolo_dataset(
 
     names = read_classes(source_dir / "classes.txt")
     if names is None:
-        class_dirs = [p for p in sorted(source_dir.iterdir()) if p.is_dir() and p.name != "labels"]
+        class_dirs = [
+            p for p in sorted(source_dir.iterdir()) if p.is_dir() and p.name != "labels"
+        ]
         if not class_dirs:
-            raise FileNotFoundError(f"Missing classes file and class folders: {source_dir}")
+            raise FileNotFoundError(
+                f"Missing classes file and class folders: {source_dir}"
+            )
         names = [path.name for path in class_dirs]
 
     label_files = discover_label_files(labels_dir)
@@ -399,7 +433,9 @@ def prepare_yolo_dataset(
     reset_output_dir(output_dir)
 
     sampled_labels = sample_items(label_files, sample_percent, "all", seed)
-    sampled_labels = sample_items_fixed_count(sampled_labels, sample_count, background_count, "all", seed)
+    sampled_labels = sample_items_fixed_count(
+        sampled_labels, sample_count, background_count, "all", seed
+    )
     train_labels, val_labels = split_items(sampled_labels, train_ratio, seed)
     oversample_class_id = resolve_class_id(oversample_class, names)
     train_labels = oversample_training_labels(
@@ -409,10 +445,26 @@ def prepare_yolo_dataset(
         seed,
     )
     train_count, train_missing = copy_labelled_items(
-        source_dir, labels_dir, output_dir, "train", train_labels, image_index, names, task, seed
+        source_dir,
+        labels_dir,
+        output_dir,
+        "train",
+        train_labels,
+        image_index,
+        names,
+        task,
+        seed,
     )
     val_count, val_missing = copy_labelled_items(
-        source_dir, labels_dir, output_dir, "val", val_labels, image_index, names, task, seed
+        source_dir,
+        labels_dir,
+        output_dir,
+        "val",
+        val_labels,
+        image_index,
+        names,
+        task,
+        seed,
     )
     missing = train_missing + val_missing
     write_dataset_yaml(yaml_path, output_dir, names)
@@ -449,8 +501,16 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Convert edited X-AnyLabeling/YOLO labels into an Ultralytics YOLO layout."
     )
-    parser.add_argument("--source", default="dataset", help="Edited dataset directory (default: dataset).")
-    parser.add_argument("--output", default="datasets", help="Output YOLO dataset directory (default: datasets).")
+    parser.add_argument(
+        "--source",
+        default="dataset",
+        help="Edited dataset directory (default: dataset).",
+    )
+    parser.add_argument(
+        "--output",
+        default="datasets",
+        help="Output YOLO dataset directory (default: datasets).",
+    )
     parser.add_argument(
         "--yaml",
         default=None,

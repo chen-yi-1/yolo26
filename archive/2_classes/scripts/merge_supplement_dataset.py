@@ -62,7 +62,8 @@ def _discover_supplements(parent_dir):
     if not parent.is_dir():
         return []
     return sorted(
-        p for p in parent.iterdir()
+        p
+        for p in parent.iterdir()
         if p.is_dir() and (p / "images").is_dir() and (p / "labels").is_dir()
     )
 
@@ -81,7 +82,11 @@ def merge_supplement_dataset(supplements, target, train_ratio=0.8, seed=42):
 
     def _count(split):
         p = target / "images" / split
-        return len([f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))]) if p.exists() else 0
+        return (
+            len([f for f in os.listdir(p) if os.path.isfile(os.path.join(p, f))])
+            if p.exists()
+            else 0
+        )
 
     train_before = _count("train")
     val_before = _count("val")
@@ -91,7 +96,9 @@ def merge_supplement_dataset(supplements, target, train_ratio=0.8, seed=42):
 
     for i, source in enumerate(supplements):
         print(f"[{i + 1}/{len(supplements)}] {source}")
-        pairs = list(_image_label_pairs(Path(source) / "images", Path(source) / "labels"))
+        pairs = list(
+            _image_label_pairs(Path(source) / "images", Path(source) / "labels")
+        )
         if not pairs:
             print(f"  Warning: no matched image/label pairs")
             continue
@@ -104,10 +111,14 @@ def merge_supplement_dataset(supplements, target, train_ratio=0.8, seed=42):
 
         skipped = 0
         for _, img, lbl in train_pairs:
-            if not _copy_pair(img, lbl, target / "images" / "train", target / "labels" / "train"):
+            if not _copy_pair(
+                img, lbl, target / "images" / "train", target / "labels" / "train"
+            ):
                 skipped += 1
         for _, img, lbl in val_pairs:
-            if not _copy_pair(img, lbl, target / "images" / "val", target / "labels" / "val"):
+            if not _copy_pair(
+                img, lbl, target / "images" / "val", target / "labels" / "val"
+            ):
                 skipped += 1
 
         total_train += len(train_pairs)
@@ -135,19 +146,25 @@ def parse_args():
         description="Merge supplement data into an existing YOLO dataset layout."
     )
     parser.add_argument(
-        "--supplements", default="datas",
+        "--supplements",
+        default="datas",
         help="Parent directory with supplement subdirs (default: datas).",
     )
     parser.add_argument(
-        "--target", default="datasets",
+        "--target",
+        default="datasets",
         help="Target YOLO dataset directory (default: datasets).",
     )
     parser.add_argument(
-        "--train-ratio", type=float, default=0.8,
+        "--train-ratio",
+        type=float,
+        default=0.8,
         help="Train split ratio (default: 0.8).",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
+        "--seed",
+        type=int,
+        default=42,
         help="Random seed (default: 42).",
     )
     return parser.parse_args()
@@ -165,8 +182,10 @@ def main():
     print()
 
     merge_supplement_dataset(
-        supplements, args.target,
-        train_ratio=args.train_ratio, seed=args.seed,
+        supplements,
+        args.target,
+        train_ratio=args.train_ratio,
+        seed=args.seed,
     )
 
 

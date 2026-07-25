@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Auto-annotate seedling images for X-AnyLabeling editing using RGB vegetation indices.
 
@@ -146,7 +146,9 @@ def convex_hull(points):
         return points
 
     def cross(origin, a, b):
-        return (a[0] - origin[0]) * (b[1] - origin[1]) - (a[1] - origin[1]) * (b[0] - origin[0])
+        return (a[0] - origin[0]) * (b[1] - origin[1]) - (a[1] - origin[1]) * (
+            b[0] - origin[0]
+        )
 
     lower = []
     for point in points:
@@ -168,10 +170,7 @@ def extract_boundary_points(mask):
     padded = np.pad(mask, 1, mode="constant", constant_values=False)
     center = padded[1:-1, 1:-1]
     interior = (
-        padded[:-2, 1:-1]
-        & padded[2:, 1:-1]
-        & padded[1:-1, :-2]
-        & padded[1:-1, 2:]
+        padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
     )
     boundary = center & ~interior
     ys, xs = np.where(boundary)
@@ -232,29 +231,36 @@ def refine_mask(
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size))
         mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
 
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(
+        mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     filled = np.zeros_like(mask_uint8)
     cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
 
     min_area = max(1, int(h * w * min_area_ratio))
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(filled, connectivity=8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        filled, connectivity=8
+    )
     if num_labels <= 1:
         return filled > 0
 
     component_ids = [
-        idx for idx in range(1, num_labels)
-        if stats[idx, cv2.CC_STAT_AREA] >= min_area
+        idx for idx in range(1, num_labels) if stats[idx, cv2.CC_STAT_AREA] >= min_area
     ]
     if not component_ids:
         component_ids = [1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))]
     if keep_largest:
-        component_ids = [max(component_ids, key=lambda idx: stats[idx, cv2.CC_STAT_AREA])]
+        component_ids = [
+            max(component_ids, key=lambda idx: stats[idx, cv2.CC_STAT_AREA])
+        ]
 
     refined = np.isin(labels, component_ids)
     return refined
 
 
-def simplify_contour_adaptive(contour, epsilon_ratio=0.003, min_points=12, max_points=300):
+def simplify_contour_adaptive(
+    contour, epsilon_ratio=0.003, min_points=12, max_points=300
+):
     """Simplify a contour while keeping a useful number of polygon vertices."""
     try:
         import cv2
@@ -358,7 +364,9 @@ def extract_mask_polygons(
         keep_largest=False,
     )
     mask_uint8 = refined.astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(
+        mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     if not contours:
         return []
 
@@ -416,14 +424,18 @@ def extract_mask_instances(
     except ImportError:
         polygon = extract_mask_polygon_fallback(mask)
         rectangle = mask_to_rectangle_points(mask)
-        return [
-            {
-                "polygon": polygon,
-                "rectangle": rectangle,
-                "mask": mask,
-                "area": int(np.sum(mask)),
-            }
-        ] if polygon is not None and rectangle is not None else []
+        return (
+            [
+                {
+                    "polygon": polygon,
+                    "rectangle": rectangle,
+                    "mask": mask,
+                    "area": int(np.sum(mask)),
+                }
+            ]
+            if polygon is not None and rectangle is not None
+            else []
+        )
 
     refined = refine_mask(
         mask,
@@ -433,7 +445,9 @@ def extract_mask_instances(
         keep_largest=False,
     )
     mask_uint8 = refined.astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(
+        mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     if not contours:
         return []
 
@@ -575,7 +589,8 @@ def build_xanylabeling_json(rec, image_name, class_names):
                     "score": instance["confidence"],
                     "points": points,
                     "group_id": None,
-                    "description": instance.get("description") or instance.get("reason"),
+                    "description": instance.get("description")
+                    or instance.get("reason"),
                     "difficult": False,
                     "shape_type": shape_type,
                     "flags": None,
@@ -584,7 +599,9 @@ def build_xanylabeling_json(rec, image_name, class_names):
                 }
             )
 
-    return build_xanylabeling_data(image_name, rec["image_width"], rec["image_height"], shapes)
+    return build_xanylabeling_data(
+        image_name, rec["image_width"], rec["image_height"], shapes
+    )
 
 
 def write_xanylabeling_json(json_path, rec, image_name, class_names):
@@ -740,7 +757,10 @@ def annotate(
         params["class_name"] = class_names[class_id]
         tasks.append((img_path, params))
     if workers == 1:
-        results = [_analyze_image(task) for task in tqdm(tasks, desc="Analyzing images", unit="image")]
+        results = [
+            _analyze_image(task)
+            for task in tqdm(tasks, desc="Analyzing images", unit="image")
+        ]
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
             results = list(
@@ -944,4 +964,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

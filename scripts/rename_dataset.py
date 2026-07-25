@@ -78,7 +78,10 @@ def rename_category(category_dir: Path, dry_run: bool):
             new_json_name = f"{new_base}.json"
             new_json_path = json_path.parent / new_json_name
 
-            if new_json_path.resolve() != json_path.resolve() and new_json_path.exists():
+            if (
+                new_json_path.resolve() != json_path.resolve()
+                and new_json_path.exists()
+            ):
                 print(f"  [冲突] 目标 JSON 已存在: {new_json_name}")
                 continue
 
@@ -96,9 +99,7 @@ def rename_category(category_dir: Path, dry_run: bool):
 
 def main():
     parser = argparse.ArgumentParser(description="重命名 dataset 图片和 JSON 文件")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="预览模式，不实际改名"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="预览模式，不实际改名")
     args = parser.parse_args()
 
     if not DATASET_DIR.exists():

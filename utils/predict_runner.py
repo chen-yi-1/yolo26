@@ -44,7 +44,9 @@ def build_export_kwargs(input_shape, simplify, dynamic, opset, device):
     }
 
 
-def display_prediction_windows(results, window_name="YOLO26 prediction", window_size=(960, 720)):
+def display_prediction_windows(
+    results, window_name="YOLO26 prediction", window_size=(960, 720)
+):
     import cv2
 
     width, height = window_size
@@ -105,7 +107,7 @@ def run_interactive_predict(
 
     result = None
     while True:
-        source = input_func("Input image filename:").strip('\'"')
+        source = input_func("Input image filename:").strip("'\"")
         if not source:
             break
         result = _predict_and_maybe_hold_window(
@@ -212,14 +214,23 @@ async function predict() {
         contents = await file.read()
 
         if len(contents) > MAX_UPLOAD_SIZE:
-            return JSONResponse(status_code=413, content={"error": "文件大小超过限制（最大 10MB）"})
+            return JSONResponse(
+                status_code=413, content={"error": "文件大小超过限制（最大 10MB）"}
+            )
 
         # 校验文件魔数，只允许 JPEG 和 PNG
         if len(contents) >= 4:
-            if not (contents[:3] == b"\xff\xd8\xff" or contents[:4] == b"\x89\x50\x4e\x47"):
-                return JSONResponse(status_code=400, content={"error": "不支持的图片格式，仅允许 JPEG 和 PNG"})
+            if not (
+                contents[:3] == b"\xff\xd8\xff" or contents[:4] == b"\x89\x50\x4e\x47"
+            ):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "不支持的图片格式，仅允许 JPEG 和 PNG"},
+                )
         else:
-            return JSONResponse(status_code=400, content={"error": "文件内容为空或格式无效"})
+            return JSONResponse(
+                status_code=400, content={"error": "文件内容为空或格式无效"}
+            )
 
         upload_dir = Path("web_uploads")
         upload_dir.mkdir(exist_ok=True)
@@ -227,7 +238,9 @@ async function predict() {
         save_path = upload_dir / filename
         save_path.write_bytes(contents)
 
-        results = model.predict(source=str(save_path), **predict_kwargs_factory(save=False))
+        results = model.predict(
+            source=str(save_path), **predict_kwargs_factory(save=False)
+        )
         plot_arr = results[0].plot()
         _, buffer = cv2.imencode(".jpg", plot_arr)
         predicted_b64 = base64.b64encode(buffer).decode("utf-8")
