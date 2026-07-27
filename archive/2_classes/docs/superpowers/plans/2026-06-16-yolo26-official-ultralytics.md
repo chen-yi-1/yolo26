@@ -107,9 +107,9 @@ Expected: FAIL because `build_train_kwargs()` and `run_training()` do not exist.
 Replace `train.py` with:
 
 ```python
-#-------------------------------------#
+# -------------------------------------#
 #       使用 Ultralytics 官方训练
-#-------------------------------------#
+# -------------------------------------#
 from pathlib import Path
 
 from ultralytics import YOLO
@@ -209,21 +209,21 @@ def run_training():
 
 
 if __name__ == "__main__":
-    #---------------------------------#
+    # ---------------------------------#
     #   task: detect / segment
-    #---------------------------------#
+    # ---------------------------------#
     task = "segment"
-    #---------------------------------#
+    # ---------------------------------#
     #   模型与数据配置
     #   model_path 可为本地 .pt 路径或官方模型名。
     #   data_yaml 传给 Ultralytics，不在本地重写其内部路径逻辑。
-    #---------------------------------#
+    # ---------------------------------#
     model_path = "model_data/yolo26n-seg.pt"
     data_yaml = "datasets/datasets.yaml"
     input_shape = [640, 640]
-    #---------------------------------#
+    # ---------------------------------#
     #   官方训练参数
-    #---------------------------------#
+    # ---------------------------------#
     epochs = 100
     batch = 16
     device = 0
@@ -237,18 +237,18 @@ if __name__ == "__main__":
     plots = True
     val = True
     verbose = True
-    #---------------------------------#
+    # ---------------------------------#
     #   官方保存路径参数
     #   project=None 时使用 Ultralytics 默认 runs/<task>/<name>。
     #   不要写 project="runs"，否则本版本会生成 runs/<task>/runs/<name>。
-    #---------------------------------#
+    # ---------------------------------#
     project = None
     name = "train"
     exist_ok = False
-    #---------------------------------#
+    # ---------------------------------#
     #   resume=True 时，model_path 应指向官方 last.pt。
     #   freeze 可为 None、整数或层索引列表，由 Ultralytics 处理。
-    #---------------------------------#
+    # ---------------------------------#
     pretrained = True
     resume = False
     freeze = None
@@ -324,10 +324,10 @@ Expected: FAIL because `common_predict_kwargs()` and `run_mode()` do not exist.
 Replace `predict.py` with:
 
 ```python
-#-----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
 #   predict.py — 官方 Ultralytics 推理与导出入口
 #   modes: predict / video / fps / dir_predict / export_onnx
-#-----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
 import time
 
 from ultralytics import YOLO
@@ -382,7 +382,9 @@ def run_export(model):
         kwargs["dynamic"] = dynamic
     if opset is not None:
         kwargs["opset"] = opset
-    return model.export(**{key: value for key, value in kwargs.items() if value is not None})
+    return model.export(
+        **{key: value for key, value in kwargs.items() if value is not None}
+    )
 
 
 def run_mode(selected_mode=None):
@@ -399,18 +401,20 @@ def run_mode(selected_mode=None):
         return model.predict(source=dir_origin_path, **common_predict_kwargs(save=True))
     if selected_mode == "export_onnx":
         return run_export(model)
-    raise AssertionError("Please specify mode: 'predict', 'video', 'fps', 'dir_predict', 'export_onnx'.")
+    raise AssertionError(
+        "Please specify mode: 'predict', 'video', 'fps', 'dir_predict', 'export_onnx'."
+    )
 
 
-#---------------------------------#
+# ---------------------------------#
 #   模型与数据配置
-#---------------------------------#
+# ---------------------------------#
 model_path = "model_data/yolo26n-seg.pt"
 data_yaml = "datasets/datasets.yaml"
 input_shape = [640, 640]
-#---------------------------------#
+# ---------------------------------#
 #   推理通用参数
-#---------------------------------#
+# ---------------------------------#
 confidence = 0.25
 nms_iou = 0.7
 device = 0
@@ -418,16 +422,16 @@ save = True
 show = False
 stream = False
 verbose = True
-#---------------------------------#
+# ---------------------------------#
 #   官方保存路径参数
 #   project=None 时使用 Ultralytics 默认 runs/<task>/<name>。
-#---------------------------------#
+# ---------------------------------#
 project = None
 name = "predict"
 exist_ok = False
-#---------------------------------#
+# ---------------------------------#
 #   模式配置
-#---------------------------------#
+# ---------------------------------#
 mode = "predict"
 video_path = 0
 test_interval = 100
@@ -490,8 +494,13 @@ class HelperTests(unittest.TestCase):
         ]
         mtimes = {paths[0]: 1, paths[1]: 2}
 
-        with patch("glob.glob", return_value=paths), \
-             patch("os.path.getmtime", side_effect=lambda path: mtimes[os.path.normpath(path)]):
+        with (
+            patch("glob.glob", return_value=paths),
+            patch(
+                "os.path.getmtime",
+                side_effect=lambda path: mtimes[os.path.normpath(path)],
+            ),
+        ):
             self.assertEqual(os.path.normpath(default_model_path()), paths[1])
 
 
