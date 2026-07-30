@@ -24,7 +24,7 @@ def is_label_filled(stem: str) -> bool:
         return False
     try:
         content = txt_path.read_text(encoding="utf-8")
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return False
     return bool(content.strip())
 
@@ -80,7 +80,7 @@ def main() -> None:
                 dst.unlink()
                 overwritten = True
                 already_exists += 1
-            except Exception as e:
+            except (OSError, FileNotFoundError) as e:
                 print(f"[ERROR] 无法删除已有文件 {dst}: {e}")
                 continue
 
@@ -89,7 +89,7 @@ def main() -> None:
             moved += 1
             tag = "[OVERWRITE]" if overwritten else "[OK]"
             print(f"  {tag} {stem}.json -> {class_dir.name}/")
-        except Exception as e:
+        except (shutil.Error, OSError) as e:
             print(f"[ERROR] 移动失败 {json_file} -> {dst}: {e}")
 
     print("\n[DONE] 处理完成")

@@ -23,7 +23,6 @@ import random
 import shutil
 from pathlib import Path
 
-
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 

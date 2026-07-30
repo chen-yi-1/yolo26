@@ -6,9 +6,7 @@
 from pathlib import Path
 
 from ultralytics import YOLO
-
 from utils.training_plots import add_training_plot_callback
-
 
 # ------------------------------------------------------------------------------------------------------------------#
 #   task: 指定训练任务类型

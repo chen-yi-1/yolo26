@@ -5,7 +5,6 @@
 # ------------------------------------------------------------------------------------------------------------------#
 
 from ultralytics import YOLO
-
 from utils.predict_runner import (
     build_common_predict_kwargs,
     build_export_kwargs,
@@ -13,7 +12,6 @@ from utils.predict_runner import (
     run_interactive_predict,
     run_web_server,
 )
-
 
 # ------------------------------------------------------------------------------------------------------------------#
 #   mode: 运行模式选择

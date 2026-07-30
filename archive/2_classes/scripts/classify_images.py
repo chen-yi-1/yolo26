@@ -30,7 +30,7 @@ def get_class_from_txt(txt_path):
                 parts = first_line.split()
                 if parts:
                     return int(parts[0])
-    except Exception:
+    except (ValueError, IndexError, TypeError):
         return None
     return None
 

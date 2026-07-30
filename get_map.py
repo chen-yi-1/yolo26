@@ -1,7 +1,6 @@
 import torch
 from ultralytics import YOLO
 
-
 if __name__ == "__main__":
     """
     Recall和Precision不像AP是一个面积的概念，因此在门限值（Confidence）不同时，网络的Recall和Precision值是不同的。

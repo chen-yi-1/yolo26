@@ -24,7 +24,6 @@ from pathlib import Path
 
 import yaml
 
-
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
@@ -237,8 +236,8 @@ def get_label_class_id(label_path):
                     parts = line.split()
                     if parts:
                         return int(parts[0])
-    except Exception:
-        pass
+    except (ValueError, IndexError, TypeError):
+        ...
     return None
 
 
@@ -342,14 +341,13 @@ def copy_labelled_items(
         if len(image_candidates) == 1:
             # Only one candidate, use it
             image_src = image_candidates[0]
-        elif len(image_candidates) > 1:
+        elif len(image_candidates) > 1 and class_id is not None and class_id < len(names):
             # Multiple candidates, choose by class
-            if class_id is not None and class_id < len(names):
-                class_name = names[class_id]
-                for candidate in image_candidates:
-                    if class_name in str(candidate.parent):
-                        image_src = candidate
-                        break
+            class_name = names[class_id]
+            for candidate in image_candidates:
+                if class_name in str(candidate.parent):
+                    image_src = candidate
+                    break
 
         if image_src is None:
             missing_images.append(label_src.stem)

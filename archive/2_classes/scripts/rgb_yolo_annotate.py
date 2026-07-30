@@ -141,7 +141,7 @@ def load_rgb_float(image_path):
 
 def convex_hull(points):
     """Compute a 2D convex hull for fallback polygon extraction."""
-    points = sorted(set((int(x), int(y)) for x, y in points))
+    points = sorted({(int(x), int(y)) for x, y in points})
     if len(points) <= 1:
         return points
 
@@ -194,7 +194,7 @@ def odd_kernel_size(image_shape, ratio, minimum=3):
     """Scale a morphology kernel to image size and force it to be odd."""
     if ratio <= 0:
         return 0
-    size = int(round(min(image_shape[:2]) * ratio))
+    size = round(min(image_shape[:2]) * ratio)
     size = max(minimum, size)
     if size % 2 == 0:
         size += 1
@@ -464,8 +464,7 @@ def extract_mask_instances(
         component_mask = np.zeros(mask.shape, dtype=np.uint8)
         cv2.drawContours(component_mask, [contour], -1, 1, thickness=cv2.FILLED)
         component_mask = component_mask.astype(bool)
-        if score_map is not None and min_component_score is not None:
-            if float(np.mean(score_map[component_mask])) < min_component_score:
+        if score_map is not None and min_component_score is not None and float(np.mean(score_map[component_mask])) < min_component_score:
                 continue
 
         polygon = simplify_contour_adaptive(
@@ -624,7 +623,7 @@ def _analyze_image(task):
     img_path, params = task
     try:
         rgb = load_rgb_float(img_path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return None, f"  Warning: skipped {img_path.name}: {exc}"
 
     indices = calculate_indices(rgb)
@@ -798,7 +797,7 @@ def annotate(
         # Copy image
         try:
             shutil.copy2(rec["image_path"], img_dst)
-        except Exception as exc:
+        except (shutil.Error, OSError) as exc:
             print(f"  Warning: failed to copy {rec['image_path'].name}: {exc}")
             continue
 

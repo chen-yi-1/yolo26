@@ -21,7 +21,7 @@ def find_empty_labels() -> list[str]:
     for txt_path in sorted(LABELS_DIR.glob("*.txt")):
         try:
             content = txt_path.read_text(encoding="utf-8")
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             content = ""
         if not content.strip():
             stems.append(txt_path.stem)
@@ -90,7 +90,7 @@ def main() -> None:
             try:
                 json_path.unlink()
                 deleted_json += 1
-            except Exception as e:
+            except (OSError, FileNotFoundError) as e:
                 print(f"[ERROR] 删除 JSON 失败 {json_path}: {e}")
         else:
             missing_json += 1
@@ -101,7 +101,7 @@ def main() -> None:
             try:
                 shutil.copy2(img_path, dst)
                 copied_imgs += 1
-            except Exception as e:
+            except (shutil.Error, OSError) as e:
                 print(f"[ERROR] 复制图片失败 {img_path} -> {dst}: {e}")
         else:
             missing_imgs += 1

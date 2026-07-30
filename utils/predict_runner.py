@@ -208,7 +208,7 @@ async function predict() {
         return html_page
 
     @app.post("/predict")
-    async def predict(file: UploadFile = File(...)):
+    async def predict(file: UploadFile = File(...)):  # noqa: B008
         MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
         contents = await file.read()
