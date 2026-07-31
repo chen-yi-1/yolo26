@@ -1,35 +1,83 @@
 # Native 命令参考
 
-只在需要主 Skill 未列出的参数、receipt、partial scope、外部角色交接或恢复命令时读取本文件。
+只在需要主 Skill 未列出的参数、receipt、partial scope 或恢复命令时读取本文件。
 
 ## 项目与 change
 
+先判断当前意图；不要按本节顺序逐条执行。只读命令用于确认事实，写命令只在对应条件满足时执行。执行写命令后立即重读 `status <change-name>`，按返回的 phase 和 continuation 决定下一步。
+
+### 首次启用 Native
+
 ```text
 comet native init [--root <artifact-root>] [--language en|zh-CN]
+```
+
+只在项目尚未启用 Native，或需要补齐 Native 目录与语言配置时使用。它会创建所需目录并写入 `.comet/config.yaml`；已有配置会保留当前 artifact root，但可更新语言。`init` 不迁移已有 artifact root；显式 `--root` 与现有配置冲突时命令会失败。
+
+完成后运行 `root show` 确认实际位置。不要在已经存在 change 时把 `init` 当作恢复命令。
+
+### 查看或迁移 artifact root
+
+```text
 comet native root show
 comet native root move <artifact-root>
+```
 
-comet native new <change-name> [--language en|zh-CN]
-comet native list [--cursor <token>]
-comet native show <change-name>
+`artifact-root` 是项目内相对路径。
+
+- `root show` 是只读命令，返回项目根、配置的 artifact root、实际 Native 目录、语言和未完成迁移。
+- `root move` 是事务性写操作，只在用户明确要迁移整个 Native artifact root 时执行；它会移动 Native 数据并更新配置。不要直接编辑配置模拟迁移。
+
+迁移未完成时，其他 Native 写操作会被阻塞。先运行只读 `doctor`，再按报告使用 `doctor --repair` 恢复。
+
+### 发现并读取 change（只读）
+
+```text
 comet native status [--cursor <token>]
 comet native status <change-name> [--details [--acceptance-cursor <token>]]
+comet native show <change-name>
+```
+
+无 change 名称的 `status` 返回分页候选。存在多个合理候选时，把候选及 phase 展示给用户选择，不要猜测。
+
+- `status <change-name>` 返回 phase、revision、检查摘要、下一条命令和 continuation；需要 findings、checkpoint 细节或 acceptance 时加 `--details`。
+- `show` 返回 state、brief 和 proposed specs；只在已经确定目标 change 后使用它读取需求与规格，不用它代替 phase/continuation 检查。
+- `findingsTruncated` 为 true 时，先处理已返回项，再重新读取。
+- `acceptancePage.nextCursor` 非空时，用 `--acceptance-cursor` 继续读取。
+- change 集合的 `nextCursor` 非空时，用 `--cursor` 继续读取。
+
+这些命令都不修改 selection、phase 或 change 内容。
+
+### 恢复已有 change
+
+```text
 comet native select <change-name>
+```
+
+只在目标 change 已唯一确定或由用户明确选择后执行。`select` 只更新当前 Native selection，不改变 phase；成功结果会返回该 change 的 continuation。
+
+选择后重新读取 `status <change-name>`，确认 phase，再加载该 phase 对应的 reference。不要把 `select` 当作阶段推进命令。
+
+### 创建新 change
+
+```text
+comet native new <change-name> [--language en|zh-CN]
+```
+
+只有确认没有对应 active change 时才运行 `new`。配置缺失时，它会创建默认 Native 配置与 `docs/comet/`；随后创建一个 Shape change、把它设为当前 selection，并返回 continuation。
+
+创建后立即运行 `show <change-name>` 与 `status <change-name>`，然后进入 Shape 澄清与共享理解确认。不要创建新 change 来绕过旧 change 的阻塞、冲突或恢复问题。
+
+### 修正规格轨迹
+
+```text
 comet native spec remove <change-name> <capability>
 comet native spec rebase <change-name> --summary <text>
 ```
 
-`artifact-root` 是项目内相对路径。`new` 在配置缺失时创建默认配置和 `<project>/docs/comet/`。已有配置需要迁移根目录时使用 `root move`，不要直接改配置。
+这两条都不是普通文件编辑命令。`spec remove` 把 capability 记录为待移除的规格操作；只在目标行为确实要求移除该 capability 时使用。`spec rebase` 只处理 canonical 规格发生并发变化的情况：先重读 canonical 规格并改写完整目标规格，再用摘要记录 rebase 原因。
 
-`status` 和 `show` 是只读命令。`new` 和 `select` 会建立当前 Native selection。多个候选无法唯一判断时让用户选择。
-
-`status <change-name> --details` 返回详细 findings 和 acceptance 页：
-
-- `findingsTruncated` 为 true 时，先处理已返回项，再重新读取；
-- `acceptancePage.nextCursor` 非空时，用 `--acceptance-cursor` 继续读取；
-- change 集合的 `nextCursor` 非空时，用 `--cursor` 继续读取。
-
-canonical 规格发生并发变化时，先重读并改写完整目标规格，再运行 `spec rebase`。不要手改 operation 或 hash。
+`spec remove` 和 `spec rebase` 都会修改 change 的规格轨迹并返回新的 continuation。执行后立即重读 `status <change-name>`；不要手改 operation、base hash 或 Runtime 状态。
 
 ## Checkpoint 与检查
 
@@ -66,53 +114,11 @@ comet native receipt automated <change-name> \
 ```text
 comet native receipt manual <change-name> \
   --acceptance <id> \
-  --responsible <text> \
   --step <text> \
-  --observation <text> \
-  --confirmed
+  --observation <text>
 ```
 
 只为真实执行的命令或人工观察生成 receipt。失败、跳过、阻塞或超时结果不能作为 pass。
-
-## 外部审核交接
-
-高风险 change 的 pass 可能要求 implementation attestation、independent review 或 waiver。当前 Agent 可以准备和最终导入交接产物，但不得执行外部角色的 approve/sign，也不得接收其私钥。
-
-Implementation 交接：
-
-```text
-comet native receipt implement <change-name> prepare \
-  --identity <implementation-identity> \
-  --output <preparation.json>
-
-comet native receipt implement <change-name> finalize \
-  --preparation <preparation.json> \
-  --attestation <owner-provided-attestation.json> \
-  --confirmed
-```
-
-Independent review 交接：
-
-```text
-comet native receipt review <change-name> prepare \
-  --implementation-receipt <ref> \
-  --report <verification.md> \
-  --required-receipt <ref> \
-  --identity <reviewer-identity> \
-  [--unified-io-receipt <ref> \
-   --adversarial-paths-receipt <ref> \
-   --generated-assets-receipt <ref> \
-   --lifecycle-eval-receipt <ref>] \
-  --output <preparation.json>
-
-comet native receipt review <change-name> finalize \
-  --preparation <preparation.json> \
-  --approval <reviewer-provided-approval.json> \
-  --attestation <reviewer-provided-attestation.json> \
-  --confirmed
-```
-
-外部角色根据 preparation 完成审批或签名，并只把公开产物返回当前 Agent。Runtime 要求 waiver 时，也由外部 waiver signer 执行 continuation 指定的命令；当前 Agent 只提交返回的 waiver ref。
 
 ## 阶段推进
 
@@ -124,12 +130,6 @@ comet native next <change-name> --summary <text> \
   [--allow-partial-scope <sha256> --partial-reason <text> --confirmed] \
   [--result pass|fail] \
   [--report <change-relative-path>] \
-  [--receipt <required-receipt-ref>] \
-  [--evidence-receipt <acceptance-receipt-ref>]... \
-  [--waiver <waiver-ref>]... \
-  [--independent-review-receipt <review-receipt-ref>] \
-  [--failure-category <token>]... \
-  [--failed-check <token>]... \
   [--override-repair <sha256> --override-summary <text>]
 
 comet native archive <change-name> --dry-run
@@ -137,9 +137,9 @@ comet native archive <change-name> --expect-preflight <sha256> [--confirmed]
 ```
 
 - Shape：只有用户确认最终共享理解后才传 `--confirmed`。
-- Build：提供真实 `--artifact`；确实没有项目文件变化时使用 `--no-code-reason`。
+- Build：提供真实 `--artifact`；确实没有项目文件变化时使用 `--no-code-reason`。如果需求变化引入新的用户决定，先保持在 Build 并重新完成澄清与确认；确认后更新正式产物，再执行 Runtime 返回的 transition 命令并传入 `--confirmed`。
 - Partial scope：先向用户说明 Runtime 返回的具体缺口和风险。超出已返回明细预算的变化由 `scope-detail-overflow` 数量和内容 hash 汇总；只有用户接受后才使用完全匹配的 scope hash、理由和 `--confirmed`。
-- Verify：提供 `--result` 和完整报告。标准报告路径提交为 `comet native next <change-name> --summary <摘要> --result pass|fail --report verification.md`；pass 需要 Runtime 要求的当前 receipts，fail 使用稳定、非敏感的失败分类和检查 ID。
+- Verify：提供 `--result` 和完整报告。标准报告路径提交为 `comet native next <change-name> --summary <摘要> --result pass|fail --report verification.md`。Runtime 在 pass 时自动执行内置 required check；报告中的 acceptance 条目直接引用 automated/manual receipt。已执行但失败的条目引用对应失败 receipt，未执行的条目写明 `skipped_reason`。repair 的失败 acceptance 和检查标识由 Runtime 从报告与 receipt 自动推导。
 - Repair override：只使用 status 返回的 signature，并且只在有一个明确新修复假设时执行。
 - Archive：先 dry-run，再使用本次预演返回的精确 preflight hash；`required` 模式还需要用户明确确认。
 

@@ -7,15 +7,6 @@ description: 当用户明确调用 /comet-native、要求启动或恢复 Native 
 
 Native 保存需求、完整目标规格、状态和证据。你负责理解、实现和验证；Runtime 负责状态、边界和恢复。
 
-## 按需加载
-
-先只使用本文件。遇到对应任务时再读取一份 reference：
-
-- Shape 中存在尚未确定的用户可见行为时，读取[澄清参考](reference/clarification.md)。
-- 需要高级参数、receipt、partial scope 或外部角色交接命令时，读取[命令参考](reference/commands.md)。
-- 需要编辑 brief、规格或 verification 时，读取[产物参考](reference/artifacts.md)。
-- 出现中断、失效证据、repair stop、冲突、锁或迁移问题时，读取[恢复参考](reference/recovery.md)。
-
 ## 核心规则
 
 从 `.comet/config.yaml` 读取：
@@ -28,15 +19,12 @@ Native 保存需求、完整目标规格、状态和证据。你负责理解、�
 
 Native 主流程不依赖任何外部 Skill。
 
-不要接收签名私钥，也不要代替外部审批角色。缺少外部动作时，按 Runtime continuation 等待并转交所需命令。
-
 ## 开始或恢复
 
 1. 运行 `comet native status`，确认当前 change 和 phase。
 2. 对目标运行 `comet native show <change-name>`；Verify、Archive 或失败后的 Build 再运行 `status <change-name> --details`。
 3. 需要更多 acceptance 时，按 `acceptancePage.nextCursor` 分页；findings 被截断时，先处理已返回项，再重新读取。
 4. 确认目标后运行 `comet native select <change-name>`。
-5. 只读取当前 phase 需要的正式产物、实现、测试和项目规则。
 
 存在多个合理候选时让用户选择。只有确认没有对应 active change 时才创建：
 
@@ -47,11 +35,20 @@ comet native new <change-name> \
 
 只使用配置指定的 Native artifact root。
 
+## 按需加载
+
+确认当前 change 和 phase 后，再按需读取一份对应 reference：
+
+- 进入 Shape 时，必须先读取并执行[澄清参考](reference/clarification.md)。不得以“需求看起来明确”为由跳过；完成共享理解确认前，不得修改项目实现或推进到 Build。
+- 需要高级参数、receipt 或 partial scope 命令时，读取[命令参考](reference/commands.md)。
+- 需要编辑 brief、规格或 verification 时，读取[产物参考](reference/artifacts.md)。
+- 出现中断、失效证据、repair stop、冲突、锁或迁移问题时，读取[恢复参考](reference/recovery.md)。
+
 ## Shape
 
 先调查能从仓库、工具和运行环境查明的事实。只有不同选择会实质改变用户可见结果，并且无法从已有要求可靠确定时，才询问用户；实现方式由你决定。
 
-存在未决行为时，按 `clarification_mode` 读取并执行澄清参考。每次用户回答后，立即更新同一个 change 的 Decisions、brief 和完整目标规格。未解决项继续以 `[blocking]` 保存；存在阻塞项时不修改项目实现，也不推进阶段。
+按 `clarification_mode` 执行澄清参考。即使初步判断没有未决行为，也必须完成其中的信息分类和静默假设检查。每次用户回答后，立即更新同一个 change 的 Decisions、brief 和完整目标规格。未解决项继续以 `[blocking]` 保存；存在阻塞项时不修改项目实现，也不推进阶段。
 
 所有用户决定处理完后，重新检查是否仍有静默假设，并向用户提供目标、范围、关键决定、验收标准和非目标的共享理解摘要。只有用户明确确认后，才移除最终阻塞项并推进：
 
@@ -65,14 +62,15 @@ brief 或规格改变已确认的行为时，重新取得用户确认；不要�
 
 实现满足 brief 和完整目标规格的最简单可靠方案。可以分批完成；长任务可使用 checkpoint 保存恢复摘要，但 checkpoint 不是完成证据。
 
-需求变化时先更新正式产物。出现新的用户决定时回到 Shape 的澄清与确认边界。
+需求变化时先更新正式产物。出现新的用户决定时保持在 Build，但重新执行 Shape 的澄清与确认边界：保存 `[blocking]`、暂停实现并询问用户。用户确认后，更新 Decisions、brief 和完整目标规格并移除阻塞项；离开 Build 时执行 Runtime 返回的命令并传入 `--confirmed`。
 
 候选实现完成后，对照完整规格和全部 acceptance 复核是否仍有遗漏，再提供真实项目产物推进：
 
 ```text
 comet native next <change-name> \
   --summary <摘要> \
-  --artifact <项目内路径>
+  --artifact <项目内路径> \
+  [--confirmed]
 ```
 
 没有代码变化或 Runtime 无法证明完整 scope 时，读取命令参考。不得把未知或不完整范围声明为 complete。
@@ -87,17 +85,17 @@ comet native next <change-name> \
 4. 运行真实验证并提交 Verify 结果。
 5. `fail` 回到 Build，从第 1 步继续，且不运行 Archive；`pass` 才进入 Archive。
 
-Loop 只在 `done`、`await-user`、`blocked` 或调用方明确要求停止时结束。一次 Agent turn、一次 checkpoint 或 Agent 自述“已完成”都不是终态。Agent 负责发现并修复缺口，Runtime 负责判断是否完成。
+`blocked` 会暂停正常 Build → Verify 循环并进入恢复分支。处理 findings 后，根据新的 continuation 从第 1 步恢复循环。只有 `done`、`await-user` 或调用方明确要求停止时，才结束当前工作。一次 Agent turn、一次 checkpoint、一次 `blocked` 或 Agent 自述“已完成”都不是终态。Agent 负责发现并修复缺口，Runtime 负责判断是否完成。
 
 ## Verify
 
 根据 acceptance、完整目标规格和改动风险运行真实验证。用实际结果完成 `verification.md` 和验收证据；未运行或失败的检查不能写成通过。
 
-使用 Runtime 返回的 acceptance ID 和 receipt。需要生成证据块、记录 automated/manual receipt、申请 waiver 或交接独立审核时，读取产物与命令参考。当前 Agent 不执行外部签名。
+使用 Runtime 返回的 acceptance ID 和 receipt。需要生成证据块或记录 automated/manual receipt 时，读取产物与命令参考。
 
-只有 Runtime 接受完整且新鲜的验收矩阵、required checks 和独立审核时才能提交 `pass`。相关实现、规格、报告或证据改变后重新验证。
+只有 Runtime 接受完整且新鲜的验收矩阵和 required checks 时才能提交 `pass`。相关实现、规格、报告或证据改变后重新验证。
 
-`fail` 会回到 Build。先根据 Runtime 返回的 failed/missing acceptance 和 failed check 修复，再重新验证；不要把再次调用 `next` 当作修复。达到 Runtime 的重复缺口停止条件或 `native.max_verify_failures` 预算时，停止并等待用户决定。
+`fail` 会回到 Build。先根据 Runtime 返回的 failed/missing acceptance 和 failed check 修复，再重新验证；不要把再次调用 `next` 当作修复。`repair-stagnation-stop` 由 Agent 按恢复参考提出新假设并使用 Runtime 返回的 override；只有 continuation 要求 `repair-continuation-decision` 时才等待用户选择。
 
 Verify 失败的中间循环不运行 Archive，也不触发归档确认。持续执行 Build → Verify，直到 pass、Runtime 阻塞或需要用户决定。
 
@@ -121,8 +119,8 @@ comet native archive <change-name> --dry-run
 Shape、Build 和 Verify 的 transition 都会返回 `next: auto | manual`、`continuation.disposition: continue | await-user | blocked | done`、所需输入与下一步动作；Archive 不通过 `next` 推进，归档成功才返回 `done`。每次 transition 后按该 Runtime continuation 行动：
 
 - `continue`：重新读取 phase 和当前所需产物后继续；
-- `await-user`：等待确实属于用户或外部角色的输入；
-- `blocked`：处理 findings，必要时读取恢复参考；
+- `await-user`：等待确实需要用户决定或补充的输入；
+- `blocked`：暂停正常循环，处理 findings，必要时读取恢复参考；处理后按新的 continuation 恢复，不因 `blocked` 本身结束任务；
 - `done`：change 已完成。
 
 `next: auto` 只表示本次 transition 成功，不表示后续步骤已执行。调用方明确要求在某次 transition 后停止时，严格按“更新正式产物 → 执行一次允许的 transition → transition 成功后不再调用工具 → 输出约定标记并结束本轮”执行；即使 continuation 为 `continue` 也不得继续执行后续步骤。
