@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------------------------------------------------#
 #   使用 Ultralytics 官方库进行 YOLO26 模型训练
-#   支持 detect（目标检测）和 segment（实例分割）两种任务
+#   支持 classify（图像分类）、detect（目标检测）、segment（实例分割）三种任务
 #   所有训练逻辑由 Ultralytics 内部实现，本脚本仅做参数配置与分发
 # ------------------------------------------------------------------------------------------------------------------#
 from pathlib import Path
@@ -10,11 +10,12 @@ from utils.training_plots import add_training_plot_callback
 
 # ------------------------------------------------------------------------------------------------------------------#
 #   task: 指定训练任务类型
+#   "classify" — 分类任务，不使用边界框或掩码，仅对输入图像进行分类
 #   "detect"  — 目标检测，使用边界框进行预测
 #   "segment" — 实例分割，使用多边形掩码进行预测
 #   两者使用不同的模型头部和损失函数，由 Ultralytics 自动切换
 # ------------------------------------------------------------------------------------------------------------------#
-task = "detect"
+task = "classify"
 # ------------------------------------------------------------------------------------------------------------------#
 #   model_path: 指定模型权值文件路径
 #   可以是本地 .pt 文件路径（如 model_data/yolo26n-seg.pt），
@@ -33,18 +34,13 @@ YOLO26l  640     55.0      54.4      286.2 ± 2.0   6.2 ± 0.2       24.8      8
 YOLO26x  640     57.5      56.9      525.8 ± 4.0   11.8 ± 0.2      55.7      193.9
 """
 # ------------------------------------------------------------------------------------------------------------------#
-model_path = "model_data/yolo26n.pt"
+model_path = "model_data/yolo26n-cls.pt"
 # ------------------------------------------------------------------------------------------------------------------#
-#   data_yaml: 数据集配置文件路径
-#   该文件需包含以下信息：
-#     - path: 数据集根目录（使用绝对路径）
-#     - train: 训练集图片相对路径
-#     - val: 验证集图片相对路径
-#     - nc: 类别数量
-#     - names: 类别名称列表
-#   示例详见 datasets/datasets.yaml
+#   data_yaml: 数据集配置
+#   detect / segment 任务：指向 datasets.yaml（含 path/train/val/nc/names）
+#   classify 任务：直接指向数据集根目录（官方格式：根目录下含 train/<类别>/ 与 val/<类别>/）
 # ------------------------------------------------------------------------------------------------------------------#
-data_yaml = "datasets/datasets.yaml"
+data_yaml = "datasets/plant_state_classify"
 # ------------------------------------------------------------------------------------------------------------------#
 #   input_shape: 网络输入尺寸，必须是 32 的倍数
 #   较大的输入尺寸（如 640）有助于检测小目标，但会消耗更多显存。
@@ -63,13 +59,13 @@ epochs = 100
 #   较大的 batch 可以加速训练，但可能影响泛化性能。
 #   GPU 显存不足时可适当降低此值。
 # ------------------------------------------------------------------------------------------------------------------#
-batch = 32
+batch = 16
 # ------------------------------------------------------------------------------------------------------------------#
 #   device: 训练设备
 #   0 表示第一张 GPU，0,1 表示多卡训练，"cpu" 使用 CPU 训练。
 #   推荐使用 GPU 进行训练，CPU 训练速度极慢。
 # ------------------------------------------------------------------------------------------------------------------#
-device = "0"
+device = "cpu"
 # ------------------------------------------------------------------------------------------------------------------#
 #   num_workers: 数据加载线程数
 #   用于数据预读取的进程数。Windows 下建议设为 0-4，Linux 可适当提高。
@@ -90,13 +86,12 @@ optimizer = "auto"
 #   SGD 通常使用 0.01，Adam 通常使用 0.001。
 #   optimizer="auto" 时 Ultralytics 会自动选择合适的学习率。
 # ------------------------------------------------------------------------------------------------------------------#
-lr0 = 0.001
+lr0 = 0.0001
 # ------------------------------------------------------------------------------------------------------------------#
-#   box / cls / dfl: 损失函数权重
+#   box / cls / dfl: 损失函数权重（检测/分割任务生效，classify 任务忽略 box/dfl）
 #   官方默认值：box=7.5，cls=0.5，dfl=1.5
 #   box 控制边界框回归损失权重，cls 控制分类损失权重，dfl 控制分布焦点损失权重。
-#   如果更关注分类是否正确，可小幅提高 cls，例如 1.0 或 1.5。
-#   不建议一次调得过大，否则可能降低定位质量或加重类别过拟合。
+#   classify 任务仅使用 cls，可适当提高以强化分类收敛。
 # ------------------------------------------------------------------------------------------------------------------#
 box = 7.5
 cls = 1.0
@@ -169,7 +164,7 @@ project = None
 #   运行结果的保存目录名，最终路径为 runs/<task>/<name>/。
 #   如果同名目录已存在且 exist_ok=False，会自动添加序号后缀。
 # ------------------------------------------------------------------------------------------------------------------#
-name = "11cls"
+name = "12cls"
 # ------------------------------------------------------------------------------------------------------------------#
 #   exist_ok: 是否允许覆盖已有运行结果
 #   True  — 同名目录存在时直接覆盖
@@ -192,26 +187,31 @@ pretrained = True
 resume = False
 # ------------------------------------------------------------------------------------------------------------------#
 #   freeze: 冻结层设置
-#   None     — 不冻结，训练所有层
-#   整数     — 冻结前 N 层（如 freeze=10 冻结前 10 层）
-#   列表     — 冻结指定索引的层（如 freeze=[0, 1, 2]）
-#   冻结 backbone 层可以加快微调速度，防止灾难性遗忘。
+#   实际按顶层 stage 冻结（匹配 "model.<index>." 前缀，见 ultralytics/engine/trainer.py）：
+#   yolo26n-cls 共 11 个 stage：0/1 Conv、2/4/6/8 C3k2、3/5/7 Conv、9 C2PSA、10 Classify（分类头）
+#   None     — 不冻结，全部参与训练（默认）
+#   整数 N   — 冻结 model.0 ~ model.(N-1)，N 必须小于 stage 总数，否则会冻结全部层
+#   列表     — 冻结指定 stage（如 freeze=[0, 1, 2]）
+#   小数据集微调时可冻结 backbone、只训分类头，例如 11 stage 用 freeze=10；
+#   数据量较大或想整体适配新域时建议 None
 # ------------------------------------------------------------------------------------------------------------------#
-freeze = None
+freeze = 10
 # ------------------------------------------------------------------------------------------------------------------#
 #   class_weights: 类别权重
 #   用于解决类别不平衡问题，为少数类赋予更高权重。
 #
-#   类别顺序：
-#   - 索引 0: abnormal (病态类)
-#   - 索引 1: healthy (健康类)
+#   当前数据集类别顺序（即 expert_plant_state，按字母序）：
+#   - 索引 0: harvest
+#   - 索引 1: light_initiation
+#   - 索引 2: rapid_growth
+#   - 索引 3: seed_germination
 #
 #   权重值通常根据类别样本数设置，例如：
-#   - 如果健康类有 100 张，病态类有 20 张，可设置为 [5.0, 1.0]
-#     （病态类权重 5 倍，健康类权重 1 倍）
-#   - 权重值建议范围：1.0-10.0，避免过大导致训练不稳定
+#   - light_initiation 只有 33 张，rapid_growth 有 102 张，可设置 [1.0, 1.5, 0.5, 1.0]
+#   - 权重值建议范围：0.5-10.0，避免过大导致训练不稳定
 #   注意：当前官方 Ultralytics YOLO.train() 不支持 class_weights 参数。
-#   保持 None 可继续使用官方训练流程；如需类别权重，需要自定义训练架构。
+#   保持 None 可继续使用官方训练流程（官方推荐 cls_pw 做类别不平衡加权）；
+#   如需类别权重，需要自定义训练架构。
 #   None 表示不使用类别权重（默认）
 # ------------------------------------------------------------------------------------------------------------------#
 class_weights = None
@@ -340,6 +340,17 @@ def require_existing_file(path, label):
     return str(path)
 
 
+def require_existing_classify_dataset(path, label):
+    """classify 任务的 data 是数据集根目录，需包含 train/ 与 val/ 类别子目录。"""
+    root = Path(path)
+    if not root.is_dir():
+        raise FileNotFoundError(f"{label} not found: {path}")
+    for sub in ("train", "val"):
+        if not (root / sub).is_dir():
+            raise FileNotFoundError(f"{label} missing '{sub}' directory: {root / sub}")
+    return str(root)
+
+
 def build_train_kwargs(
     data_yaml,
     task,
@@ -451,14 +462,26 @@ def build_train_kwargs(
 
 
 def run_training():
-    require_existing_file(data_yaml, "Dataset YAML")
-    if any(sep in model_path for sep in ("/", "\\")):
-        require_existing_file(model_path, "Model")
+    # 相对路径统一锚定到本脚本所在目录，避免受启动时工作目录影响
+    script_dir = Path(__file__).resolve().parent
 
-    model = YOLO(model_path)
+    def resolve_path(path):
+        path_obj = Path(path)
+        return path_obj if path_obj.is_absolute() else script_dir / path_obj
+
+    data_path = resolve_path(data_yaml)
+    model_file = resolve_path(model_path)
+    if task == "classify":
+        require_existing_classify_dataset(data_path, "Classify dataset root")
+    else:
+        require_existing_file(data_path, "Dataset YAML")
+    if any(sep in model_path for sep in ("/", "\\")):
+        require_existing_file(model_file, "Model")
+
+    model = YOLO(str(model_file))
     add_training_plot_callback(model)
     train_kwargs = build_train_kwargs(
-        data_yaml=data_yaml,
+        data_yaml=str(data_path),
         task=task,
         imgsz=input_shape[0],
         epochs=epochs,
