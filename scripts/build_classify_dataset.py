@@ -62,8 +62,7 @@ def read_rows(csv_path: Path) -> list[dict[str, str]]:
         rows = []
         for row in csv.DictReader(f):
             row = {
-                (key or "").strip(): (value or "").strip()
-                for key, value in row.items()
+                (key or "").strip(): (value or "").strip() for key, value in row.items()
             }
             if row.get("capture_id"):
                 rows.append(row)
@@ -155,8 +154,11 @@ def main() -> None:
         roi = rois.get((layer_id, pot_slot))
         capture_dir = captures_dir / row["capture_id"]
         frame_path = next(
-            (capture_dir / f"{args.frame}{ext}" for ext in frame_exts
-             if (capture_dir / f"{args.frame}{ext}").is_file()),
+            (
+                capture_dir / f"{args.frame}{ext}"
+                for ext in frame_exts
+                if (capture_dir / f"{args.frame}{ext}").is_file()
+            ),
             None,
         )
         if roi is None or frame_path is None:
@@ -192,9 +194,7 @@ def main() -> None:
         "train": defaultdict(int),
         "val": defaultdict(int),
     }
-    bounds_cache = {
-        key: polygon_bounds(polygon) for key, polygon in rois.items()
-    }
+    bounds_cache = {key: polygon_bounds(polygon) for key, polygon in rois.items()}
     failed = 0
     # CSV 中同一 capture 的记录连续出现，仅缓存当前 capture 的整图以控制内存
     cached_id: str | None = None
@@ -235,7 +235,9 @@ def main() -> None:
         warn = "  [警告] val 中无该类别样本" if t > 0 and v == 0 else ""
         print(f"  {state}: train={t}, val={v}{warn}")
     print(f"\n输出目录: {out_root}")
-    print(f"训练命令示例: yolo classify train data={out_root} model=yolo26n-cls.pt epochs=100 imgsz=224")
+    print(
+        f"训练命令示例: yolo classify train data={out_root} model=yolo26n-cls.pt epochs=100 imgsz=224"
+    )
 
 
 if __name__ == "__main__":

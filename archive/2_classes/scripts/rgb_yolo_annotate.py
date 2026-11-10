@@ -464,8 +464,12 @@ def extract_mask_instances(
         component_mask = np.zeros(mask.shape, dtype=np.uint8)
         cv2.drawContours(component_mask, [contour], -1, 1, thickness=cv2.FILLED)
         component_mask = component_mask.astype(bool)
-        if score_map is not None and min_component_score is not None and float(np.mean(score_map[component_mask])) < min_component_score:
-                continue
+        if (
+            score_map is not None
+            and min_component_score is not None
+            and float(np.mean(score_map[component_mask])) < min_component_score
+        ):
+            continue
 
         polygon = simplify_contour_adaptive(
             contour,

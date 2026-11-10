@@ -341,7 +341,9 @@ def copy_labelled_items(
         if len(image_candidates) == 1:
             # Only one candidate, use it
             image_src = image_candidates[0]
-        elif len(image_candidates) > 1 and class_id is not None and class_id < len(names):
+        elif (
+            len(image_candidates) > 1 and class_id is not None and class_id < len(names)
+        ):
             # Multiple candidates, choose by class
             class_name = names[class_id]
             for candidate in image_candidates:
